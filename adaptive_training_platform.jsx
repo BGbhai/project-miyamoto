@@ -342,23 +342,115 @@ function buildCoachResponseSchema() {
   };
 }
 
+function normalizeExerciseKey(name) {
+  return String(name || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+function matchExerciseNameToWorkout(name, workoutNames = []) {
+  const raw = String(name || '').trim();
+  if (!raw) return '';
+  if (!workoutNames.length) return raw;
+
+  const targetKey = normalizeExerciseKey(raw);
+  if (!targetKey) return raw;
+  const keyedWorkout = workoutNames.map(n => ({ name: n, key: normalizeExerciseKey(n) }));
+  const exact = keyedWorkout.find(item => item.key === targetKey);
+  if (exact) return exact.name;
+
+  const partial = keyedWorkout.find(item => item.key.includes(targetKey) || targetKey.includes(item.key));
+  return partial ? partial.name : raw;
+}
+
+function assessCoachCompleteness(notes, workoutNames = []) {
+  const exercises = notes?.exercises && typeof notes.exercises === 'object' ? notes.exercises : {};
+  if (!workoutNames.length) {
+    const hasAny = Object.keys(exercises).length > 0;
+    return {
+      quality: hasAny ? 'complete' : 'summary_only',
+      missingNames: [],
+      coverageCount: hasAny ? 1 : 0,
+      workoutCount: 0,
+    };
+  }
+
+  const missingNames = workoutNames.filter(name => {
+    const note = exercises[name];
+    return !note || (!String(note.cue || '').trim() && !String(note.why || '').trim());
+  });
+  const coverageCount = workoutNames.length - missingNames.length;
+  const quality = coverageCount === workoutNames.length
+    ? 'complete'
+    : coverageCount > 0
+      ? 'partial'
+      : 'summary_only';
+  return {
+    quality,
+    missingNames,
+    coverageCount,
+    workoutCount: workoutNames.length,
+  };
+}
+
+function synthesizeExerciseNotes(workout = [], seed = {}) {
+  const merged = { ...(seed || {}) };
+  const presetByPattern = {
+    lower: {
+      cue: 'Brace before each rep and drive through full foot pressure.',
+      why: 'Builds lower-body strength safely with consistent mechanics.',
+    },
+    upper: {
+      cue: 'Set shoulder position first, then press or pull with controlled tempo.',
+      why: 'Improves force transfer while protecting shoulders and elbows.',
+    },
+    core: {
+      cue: 'Exhale into bracing and keep ribcage stacked over pelvis.',
+      why: 'Reinforces trunk control for every loaded movement today.',
+    },
+    inversion: {
+      cue: 'Stack wrist-elbow-shoulder and move only within stable balance range.',
+      why: 'Builds skill safely while maintaining joint control.',
+    },
+    vertical_pull: {
+      cue: 'Start from active scapula, then pull elbows down and back.',
+      why: 'Improves pulling strength with better lat engagement.',
+    },
+    aerobic: {
+      cue: 'Keep breathing controlled and stay at the planned effort zone.',
+      why: 'Builds conditioning without unnecessary fatigue spikes.',
+    },
+  };
+
+  for (const ex of workout || []) {
+    const name = String(ex?.name || '').trim();
+    if (!name) continue;
+    const current = merged[name] || {};
+    if (String(current.cue || '').trim() && String(current.why || '').trim()) continue;
+
+    const pattern = normalizeExerciseKey(ex?.pattern || '').replace(/\s+/g, '_');
+    const preset = presetByPattern[pattern] || null;
+    merged[name] = {
+      cue: String(current.cue || '').trim() || preset?.cue || 'Use controlled tempo, full range, and stable bracing each rep.',
+      why: String(current.why || '').trim() || preset?.why || 'Supports high-quality execution while managing fatigue.',
+    };
+  }
+
+  return merged;
+}
+
 function normalizeCoachPayload(payload, workout = []) {
   if (!payload || typeof payload !== 'object') throw createGeminiParseError('response', JSON.stringify(payload));
 
   const workoutNames = (workout || []).map(ex => String(ex?.name || '').trim()).filter(Boolean);
-  const canonicalByLower = Object.fromEntries(workoutNames.map(name => [name.toLowerCase(), name]));
-  const canonicalizeExerciseName = (value) => {
-    const raw = String(value || '').trim();
-    if (!raw) return '';
-    return canonicalByLower[raw.toLowerCase()] || raw;
-  };
   const asText = (value, fallback = '') => (typeof value === 'string' ? value.trim() : fallback);
-
   const exercises = {};
 
   if (Array.isArray(payload.exerciseNotes)) {
     for (const note of payload.exerciseNotes) {
-      const exerciseName = canonicalizeExerciseName(note?.exerciseName);
+      const exerciseName = matchExerciseNameToWorkout(note?.exerciseName, workoutNames);
       if (!exerciseName) continue;
       const cue = asText(note?.cue);
       const why = asText(note?.why);
@@ -372,7 +464,7 @@ function normalizeCoachPayload(payload, workout = []) {
 
   if (payload.exercises && typeof payload.exercises === 'object' && !Array.isArray(payload.exercises)) {
     for (const [name, note] of Object.entries(payload.exercises)) {
-      const exerciseName = canonicalizeExerciseName(name);
+      const exerciseName = matchExerciseNameToWorkout(name, workoutNames);
       if (!exerciseName) continue;
       const cue = asText(note?.cue);
       const why = asText(note?.why);
@@ -384,25 +476,17 @@ function normalizeCoachPayload(payload, workout = []) {
     }
   }
 
-  const hasStructuredNotes =
-    (Array.isArray(payload.exerciseNotes) && payload.exerciseNotes.length > 0) ||
-    (payload.exercises && typeof payload.exercises === 'object' && Object.keys(payload.exercises).length > 0);
-  if (!hasStructuredNotes) {
-    throw createGeminiParseError('response', JSON.stringify(payload));
-  }
-
-  for (const name of workoutNames) {
-    if (exercises[name]) continue;
-    exercises[name] = {
-      cue: 'Use controlled tempo, full range, and steady bracing.',
-      why: 'Improves quality while keeping fatigue and injury risk in check.',
-    };
-  }
-
-  return {
+  const notes = {
     sessionFocus: asText(payload.sessionFocus, 'Prioritize crisp technique and consistent effort this session.'),
     watchOut: asText(payload.watchOut, 'Scale load or complexity if form degrades or pain appears.'),
     exercises,
+  };
+
+  return {
+    notes,
+    workoutNames,
+    source: 'primary',
+    ...assessCoachCompleteness(notes, workoutNames),
   };
 }
 
@@ -416,13 +500,14 @@ function buildCoachRepairBody(rawText, workoutNames = []) {
   const workoutList = (workoutNames || []).length
     ? workoutNames.map(name => `- ${name}`).join('\n')
     : '- none';
+  const requiredCount = workoutNames.length;
   const boundedRawText = String(rawText || '').slice(0, 6000);
 
   const prompt = `Convert the RAW MODEL OUTPUT into strict JSON that matches the schema exactly.
 Rules:
 - Return JSON only. No markdown, no explanations.
 - Use exercise names exactly as provided in WORKOUT EXERCISES.
-- Include one exerciseNotes item per workout exercise when available.
+- ${requiredCount > 0 ? `Return exactly ${requiredCount} exerciseNotes items, one per workout exercise.` : 'If no workout exercises exist, return an empty exerciseNotes array.'}
 
 WORKOUT EXERCISES:
 ${workoutList}
@@ -437,7 +522,7 @@ ${boundedRawText}`;
     contents: [{ parts: [{ text: prompt }] }],
     generationConfig: {
       temperature: 0,
-      maxOutputTokens: 768,
+      maxOutputTokens: 1024,
       responseMimeType: 'application/json',
       responseSchema: schema,
     },
@@ -452,23 +537,73 @@ async function callGeminiCoachWithRepair({ apiKey, endpoint, primaryBody, workou
     requestType: 'Session coaching',
   });
   const primaryText = extractGeminiText(primaryData);
-
+  let primaryResult = null;
+  let primaryParseError = null;
   try {
-    return tryParseCoachPayload(primaryText, workout);
+    primaryResult = tryParseCoachPayload(primaryText, workout);
   } catch (err) {
     if (!err?.isGeminiParseError) throw err;
-
-    const workoutNames = (workout || []).map(ex => String(ex?.name || '').trim()).filter(Boolean);
-    const repairBody = buildCoachRepairBody(primaryText, workoutNames);
-    const repairedData = await callGeminiWithRetry({
-      apiKey,
-      endpoint,
-      body: repairBody,
-      requestType: 'Session coaching JSON repair',
-    });
-    const repairedText = extractGeminiText(repairedData);
-    return tryParseCoachPayload(repairedText, workout);
+    primaryParseError = err;
   }
+
+  if (primaryResult && primaryResult.quality === 'complete') {
+    return {
+      notes: primaryResult.notes,
+      warning: null,
+      quality: primaryResult.quality,
+      usedRepair: false,
+      source: 'primary',
+    };
+  }
+
+  const workoutNames = (workout || []).map(ex => String(ex?.name || '').trim()).filter(Boolean);
+  const repairBody = buildCoachRepairBody(primaryText, workoutNames);
+  const repairedData = await callGeminiWithRetry({
+    apiKey,
+    endpoint,
+    body: repairBody,
+    requestType: 'Session coaching JSON repair',
+  });
+  const repairedText = extractGeminiText(repairedData);
+
+  let repairedResult = null;
+  let repairedParseError = null;
+  try {
+    repairedResult = { ...tryParseCoachPayload(repairedText, workout), source: 'repair' };
+  } catch (err) {
+    if (!err?.isGeminiParseError) throw err;
+    repairedParseError = err;
+  }
+
+  if (repairedResult && repairedResult.quality === 'complete') {
+    return {
+      notes: repairedResult.notes,
+      warning: null,
+      quality: repairedResult.quality,
+      usedRepair: true,
+      source: 'repair',
+    };
+  }
+
+  const bestStructured = repairedResult || primaryResult;
+  if (!bestStructured) {
+    throw repairedParseError || primaryParseError || createGeminiParseError('response', primaryText);
+  }
+
+  const filledExercises = synthesizeExerciseNotes(workout, bestStructured.notes.exercises);
+  const filledNotes = { ...bestStructured.notes, exercises: filledExercises };
+  const completeness = assessCoachCompleteness(filledNotes, bestStructured.workoutNames || workoutNames);
+  const warning = completeness.missingNames.length > 0 || bestStructured.quality !== 'complete'
+    ? 'AI returned partial exercise notes; missing cues were safely filled.'
+    : null;
+
+  return {
+    notes: filledNotes,
+    warning,
+    quality: completeness.quality,
+    usedRepair: !!repairedResult,
+    source: 'synthetic_fill',
+  };
 }
 
 function buildFallbackCoachingNotes(workout, userContext = {}) {
@@ -949,6 +1084,12 @@ const INITIAL_STATE = createInitialState();
 
 async function callGeminiAPI(apiKey, endpoint, userContext, workout) {
   const systemPrompt = `You are an elite personal trainer and coach with deep expertise in strength training, calisthenics, martial arts (Muay Thai, Boxing, BJJ, Wrestling), sports science, and human anatomy. You give concise, practical coaching advice tailored to the specific athlete.`;
+  const workoutNames = (workout || []).map(ex => String(ex?.name || '').trim()).filter(Boolean);
+  const workoutCount = workoutNames.length;
+  const workoutList = workoutCount > 0 ? workoutNames.map(name => `- ${name}`).join('\n') : '- none';
+  const countRule = workoutCount > 0
+    ? `- Return exactly ${workoutCount} objects in "exerciseNotes", one per workout exercise.\n- Each "exerciseName" must match one item in WORKOUT EXERCISE NAMES exactly, and each name appears only once.`
+    : '- Return an empty "exerciseNotes" array.';
 
   const contextText = `
 ATHLETE: ${userContext.name}, ${userContext.age}yo, ${userContext.bodyweight}kg, intermediate level
@@ -967,7 +1108,12 @@ ${workout.map((ex, i) => `${i + 1}. ${ex.name} — ${ex.sets ? ex.sets + '×' + 
 
   const prompt = `${contextText}
 
+WORKOUT EXERCISE NAMES (${workoutCount} total):
+${workoutList}
+
 Respond ONLY with strict JSON (no markdown, no code blocks) in this exact format:
+- Return JSON only, no explanatory text.
+${countRule}
 {
   "sessionFocus": "2 sentences max: what to focus on and why today",
   "watchOut": "1 sentence: biggest risk or thing to be careful about today",
@@ -2806,8 +2952,16 @@ function TrainView({ state, dispatch }) {
       state.aiConfig.endpoint,
       userContext,
       state.activeSession.exercises || []
-    ).then(notes => {
-      dispatch({ type: 'SET_AI_COACHING', payload: { notes, loading: false, error: null, warning: null } });
+    ).then(result => {
+      dispatch({
+        type: 'SET_AI_COACHING',
+        payload: {
+          notes: result?.notes || null,
+          loading: false,
+          error: null,
+          warning: result?.warning || null,
+        },
+      });
     }).catch(err => {
       if (err?.isGeminiParseError) {
         const fallbackNotes = buildFallbackCoachingNotes(state.activeSession.exercises || [], userContext);
@@ -2817,7 +2971,7 @@ function TrainView({ state, dispatch }) {
             notes: fallbackNotes,
             loading: false,
             error: null,
-            warning: 'AI returned malformed JSON. Showing safe fallback cues for this session.',
+            warning: 'AI returned malformed JSON on both attempts. Showing safe fallback cues for this session.',
           },
         });
         return;
