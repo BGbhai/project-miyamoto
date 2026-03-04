@@ -393,6 +393,109 @@ function parseGeminiError(res, payload, requestType = 'Gemini request') {
   return err;
 }
 
+function createGeminiParseError(requestType = 'response', rawText = '') {
+  const err = new Error(`Gemini ${requestType} parse error: invalid JSON payload.`);
+  err.name = 'GeminiParseError';
+  err.isGeminiParseError = true;
+  err.rawTextSnippet = String(rawText || '').replace(/\s+/g, ' ').slice(0, 200);
+  return err;
+}
+
+function extractGeminiText(payload) {
+  const candidates = Array.isArray(payload?.candidates) ? payload.candidates : [];
+  const textParts = [];
+  for (const candidate of candidates) {
+    const parts = Array.isArray(candidate?.content?.parts) ? candidate.content.parts : [];
+    for (const part of parts) {
+      if (typeof part?.text === 'string' && part.text.trim()) textParts.push(part.text);
+    }
+  }
+  if (textParts.length) return textParts.join('\n');
+  return typeof payload?.text === 'string' ? payload.text : '';
+}
+
+function sanitizeGeminiText(text) {
+  return String(text || '')
+    .replace(/```(?:json)?\s*/gi, '')
+    .replace(/```/g, '')
+    .trim();
+}
+
+function extractFirstJSONObject(text) {
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\') {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === '{') {
+      if (depth === 0) start = i;
+      depth++;
+      continue;
+    }
+    if (ch === '}') {
+      if (depth > 0) depth--;
+      if (depth === 0 && start !== -1) return text.slice(start, i + 1);
+    }
+  }
+
+  return null;
+}
+
+function parseGeminiJson(text, requestType = 'response') {
+  const clean = sanitizeGeminiText(text);
+  if (!clean) throw createGeminiParseError(requestType, text);
+
+  try {
+    return JSON.parse(clean);
+  } catch (firstErr) {
+    const extracted = extractFirstJSONObject(clean);
+    if (extracted) {
+      try {
+        return JSON.parse(extracted);
+      } catch (secondErr) {
+        throw createGeminiParseError(requestType, clean);
+      }
+    }
+    throw createGeminiParseError(requestType, clean);
+  }
+}
+
+function buildFallbackCoachingNotes(workout, userContext = {}) {
+  const typeLabel = userContext.sessionType
+    ? String(userContext.sessionType).replace(/([A-Z])/g, ' $1').toLowerCase()
+    : 'training';
+  const exercises = {};
+  for (const ex of workout || []) {
+    const name = ex?.name || 'Exercise';
+    exercises[name] = {
+      cue: 'Use controlled tempo, full range of motion, and stable bracing each rep.',
+      why: 'Maintains quality and lowers risk while progressing this session.',
+    };
+  }
+  return {
+    sessionFocus: `Prioritize crisp technique and consistent effort for this ${typeLabel} session.`,
+    watchOut: 'Scale load or complexity if form degrades or pain appears.',
+    exercises,
+  };
+}
+
 async function callGeminiWithRetry({ apiKey, endpoint, body, requestType = 'Gemini request' }) {
   if (!apiKey) throw new Error('Gemini API key missing.');
   const maxRetryIndex = GEMINI_RETRY_DELAYS_MS.length;
@@ -446,6 +549,7 @@ function createAIConfig() {
     coachingNotes: null,
     coachingLoading: false,
     coachingError: null,
+    coachingWarning: null,
   };
 }
 
@@ -884,17 +988,12 @@ Respond ONLY with a valid JSON object (no markdown, no code blocks) in this exac
   const body = {
     contents: [{ parts: [{ text: prompt }] }],
     systemInstruction: { parts: [{ text: systemPrompt }] },
-    generationConfig: { temperature: 0.4, maxOutputTokens: 1024 },
+    generationConfig: { temperature: 0.4, maxOutputTokens: 1024, responseMimeType: 'application/json' },
   };
 
   const data = await callGeminiWithRetry({ apiKey, endpoint, body, requestType: 'Session coaching' });
-  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
-  const clean = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-  try {
-    return JSON.parse(clean);
-  } catch (err) {
-    throw new Error('Gemini response parse error: invalid JSON payload.');
-  }
+  const text = extractGeminiText(data);
+  return parseGeminiJson(text, 'response');
 }
 
 async function callGeminiWeeklySummary(apiKey, endpoint, weekContext) {
@@ -932,13 +1031,8 @@ Respond ONLY with valid JSON (no markdown):
   };
 
   const data = await callGeminiWithRetry({ apiKey, endpoint, body, requestType: 'Weekly summary' });
-  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
-  const clean = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-  try {
-    return JSON.parse(clean);
-  } catch (err) {
-    throw new Error('Gemini weekly summary parse error: invalid JSON payload.');
-  }
+  const text = extractGeminiText(data);
+  return parseGeminiJson(text, 'weekly summary');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1635,7 +1729,7 @@ function appReducer(state, action) {
       };
     }
     case 'SET_AI_COACHING': {
-      const { notes, loading, error } = action.payload || {};
+      const { notes, loading, error, warning } = action.payload || {};
       return {
         ...state,
         aiConfig: {
@@ -1643,6 +1737,7 @@ function appReducer(state, action) {
           coachingNotes: notes !== undefined ? notes : state.aiConfig.coachingNotes,
           coachingLoading: loading !== undefined ? loading : state.aiConfig.coachingLoading,
           coachingError: error !== undefined ? error : state.aiConfig.coachingError,
+          coachingWarning: warning !== undefined ? warning : state.aiConfig.coachingWarning,
         },
       };
     }
@@ -1725,7 +1820,7 @@ function appReducer(state, action) {
         currentSessionType: type,
         currentMASubtype: activeSession.maSubtype,
         activeSession,
-        aiConfig: { ...state.aiConfig, coachingNotes: null, coachingLoading: false, coachingError: null },
+        aiConfig: { ...state.aiConfig, coachingNotes: null, coachingLoading: false, coachingError: null, coachingWarning: null },
       };
     }
     case 'ACCEPT_ALTERNATE_SESSION': {
@@ -2686,7 +2781,7 @@ function TrainView({ state, dispatch }) {
   useEffect(() => {
     if (!state.activeSession || !state.aiConfig.enabled || !state.aiConfig.apiKey) return;
     if (state.aiConfig.coachingLoading || state.aiConfig.coachingNotes) return;
-    dispatch({ type: 'SET_AI_COACHING', payload: { loading: true } });
+    dispatch({ type: 'SET_AI_COACHING', payload: { loading: true, error: null, warning: null } });
     const userContext = {
       name: state.profile.name || 'Athlete',
       age: state.profile.age || '?',
@@ -2713,9 +2808,22 @@ function TrainView({ state, dispatch }) {
       userContext,
       state.activeSession.exercises || []
     ).then(notes => {
-      dispatch({ type: 'SET_AI_COACHING', payload: { notes, loading: false } });
+      dispatch({ type: 'SET_AI_COACHING', payload: { notes, loading: false, error: null, warning: null } });
     }).catch(err => {
-      dispatch({ type: 'SET_AI_COACHING', payload: { error: err.message, loading: false } });
+      if (err?.isGeminiParseError) {
+        const fallbackNotes = buildFallbackCoachingNotes(state.activeSession.exercises || [], userContext);
+        dispatch({
+          type: 'SET_AI_COACHING',
+          payload: {
+            notes: fallbackNotes,
+            loading: false,
+            error: null,
+            warning: 'AI returned malformed JSON. Showing safe fallback cues for this session.',
+          },
+        });
+        return;
+      }
+      dispatch({ type: 'SET_AI_COACHING', payload: { error: err.message, loading: false, warning: null } });
     });
   }, [state.activeSession?.id]);
 
@@ -2934,6 +3042,9 @@ function TrainView({ state, dispatch }) {
           )}
           {state.aiConfig.coachingError && (
             <div className="text-red-400 font-mono text-xs">⚠ AI: {state.aiConfig.coachingError}</div>
+          )}
+          {state.aiConfig.coachingWarning && !state.aiConfig.coachingLoading && (
+            <div className="text-orange-400 font-mono text-xs">⚠ AI: {state.aiConfig.coachingWarning}</div>
           )}
           {state.aiConfig.coachingNotes && !state.aiConfig.coachingLoading && (
             <div className="space-y-1">
