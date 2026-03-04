@@ -335,12 +335,114 @@ function getMuscleRecoveryAdvice(muscleRecovery) {
   return { fatiguedMuscles: fatigued, recoveringMuscles: recovering, recoveryScore: clamp(score, 0, 100) };
 }
 
+const GEMINI_ALLOWED_MODELS = ['gemini-3-flash-preview', 'gemini-2.5-flash', 'gemini-flash-latest'];
+const GEMINI_DEFAULT_MODEL = 'gemini-3-flash-preview';
+const GEMINI_RETRY_DELAYS_MS = [1500, 3000, 6000];
+const WEEKLY_SUMMARY_COOLDOWN_MS = 12 * 60 * 60 * 1000;
+
+function normalizeGeminiModel(model) {
+  return GEMINI_ALLOWED_MODELS.includes(model) ? model : GEMINI_DEFAULT_MODEL;
+}
+
+function buildGeminiEndpoint(model) {
+  const normalizedModel = normalizeGeminiModel(model);
+  return `https://generativelanguage.googleapis.com/v1beta/models/${normalizedModel}:generateContent`;
+}
+
+function sleepMs(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function parseRetryAfterSeconds(value) {
+  if (!value) return null;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.round(seconds);
+  const ts = Date.parse(value);
+  if (!Number.isFinite(ts)) return null;
+  const delta = Math.ceil((ts - Date.now()) / 1000);
+  return delta > 0 ? delta : null;
+}
+
+function parseGeminiError(res, payload, requestType = 'Gemini request') {
+  const status = res?.status || 0;
+  const retryAfterSeconds = parseRetryAfterSeconds(res?.headers?.get('retry-after'));
+  const payloadMsg = typeof payload === 'string'
+    ? payload
+    : (payload?.error?.message || payload?.message || '');
+  const apiCode = payload?.error?.status || payload?.error?.code || null;
+
+  let message = `${requestType} failed (${status || 'network'}).`;
+  if (status === 429) {
+    message = retryAfterSeconds
+      ? `Rate limit hit (429). Retry in ~${retryAfterSeconds}s.`
+      : 'Rate limit hit (429). Please wait a bit and retry.';
+  } else if (status === 503) {
+    message = 'Gemini service is temporarily unavailable (503). Retrying may help.';
+  } else if (status === 403) {
+    message = 'Gemini access denied (403). Check API key permissions and billing/quota.';
+  } else if (status === 400) {
+    message = 'Gemini rejected the request (400).';
+  }
+  if (payloadMsg) message = `${message} ${payloadMsg}`.trim();
+
+  const err = new Error(message);
+  err.status = status;
+  err.code = apiCode;
+  err.retryAfterSeconds = retryAfterSeconds;
+  err.payload = payload;
+  return err;
+}
+
+async function callGeminiWithRetry({ apiKey, endpoint, body, requestType = 'Gemini request' }) {
+  if (!apiKey) throw new Error('Gemini API key missing.');
+  const maxRetryIndex = GEMINI_RETRY_DELAYS_MS.length;
+
+  for (let attempt = 0; attempt <= maxRetryIndex; attempt++) {
+    try {
+      const res = await fetch(`${endpoint}?key=${apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+      if (res.ok) return await res.json();
+
+      let payload = null;
+      try {
+        payload = await res.json();
+      } catch (jsonErr) {
+        try {
+          payload = await res.text();
+        } catch (textErr) {
+          payload = null;
+        }
+      }
+
+      const err = parseGeminiError(res, payload, requestType);
+      const isTransient = res.status === 429 || res.status === 503;
+      if (!isTransient || attempt === maxRetryIndex) throw err;
+
+      const jitter = Math.floor(Math.random() * 501);
+      const retryAfterMs = err.retryAfterSeconds ? err.retryAfterSeconds * 1000 : 0;
+      const waitMs = Math.max(GEMINI_RETRY_DELAYS_MS[attempt] + jitter, retryAfterMs);
+      await sleepMs(waitMs);
+    } catch (error) {
+      const isNetwork = error instanceof TypeError || error?.name === 'TypeError';
+      if (!isNetwork || attempt === maxRetryIndex) throw error;
+      const jitter = Math.floor(Math.random() * 501);
+      await sleepMs(GEMINI_RETRY_DELAYS_MS[attempt] + jitter);
+    }
+  }
+
+  throw new Error(`${requestType} failed after retries.`);
+}
+
 function createAIConfig() {
   return {
     enabled: false,
     apiKey: '',
-    model: 'gemini-2.0-flash',
-    endpoint: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent',
+    model: GEMINI_DEFAULT_MODEL,
+    endpoint: buildGeminiEndpoint(GEMINI_DEFAULT_MODEL),
     coachingNotes: null,
     coachingLoading: false,
     coachingError: null,
@@ -361,6 +463,9 @@ function createPlanState() {
     weeklySummary: null,
     weeklySummaryGeneratedAt: null,
     weeklySummaryLoading: false,
+    weeklySummaryCooldownUntil: null,
+    weeklySummaryLastAttemptAt: null,
+    weeklySummaryLastError: null,
   };
 }
 
@@ -782,17 +887,14 @@ Respond ONLY with a valid JSON object (no markdown, no code blocks) in this exac
     generationConfig: { temperature: 0.4, maxOutputTokens: 1024 },
   };
 
-  const res = await fetch(`${endpoint}?key=${apiKey}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-
-  if (!res.ok) throw new Error(`Gemini API error: ${res.status}`);
-  const data = await res.json();
+  const data = await callGeminiWithRetry({ apiKey, endpoint, body, requestType: 'Session coaching' });
   const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
   const clean = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-  return JSON.parse(clean);
+  try {
+    return JSON.parse(clean);
+  } catch (err) {
+    throw new Error('Gemini response parse error: invalid JSON payload.');
+  }
 }
 
 async function callGeminiWeeklySummary(apiKey, endpoint, weekContext) {
@@ -829,17 +931,14 @@ Respond ONLY with valid JSON (no markdown):
     generationConfig: { temperature: 0.3, maxOutputTokens: 512 },
   };
 
-  const res = await fetch(`${endpoint}?key=${apiKey}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-
-  if (!res.ok) throw new Error(`Gemini API error: ${res.status}`);
-  const data = await res.json();
+  const data = await callGeminiWithRetry({ apiKey, endpoint, body, requestType: 'Weekly summary' });
   const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
   const clean = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-  return JSON.parse(clean);
+  try {
+    return JSON.parse(clean);
+  } catch (err) {
+    throw new Error('Gemini weekly summary parse error: invalid JSON payload.');
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1112,6 +1211,13 @@ function buildRollingPlanForState(state) {
     watchout,
     upcoming: ranked.slice(0, 4),
     acknowledgedPrompts: { ...(state.planState?.acknowledgedPrompts || {}) },
+    progressionPrompts: state.planState?.progressionPrompts || [],
+    weeklySummary: state.planState?.weeklySummary || null,
+    weeklySummaryGeneratedAt: state.planState?.weeklySummaryGeneratedAt || null,
+    weeklySummaryLoading: state.planState?.weeklySummaryLoading || false,
+    weeklySummaryCooldownUntil: state.planState?.weeklySummaryCooldownUntil || null,
+    weeklySummaryLastAttemptAt: state.planState?.weeklySummaryLastAttemptAt || null,
+    weeklySummaryLastError: state.planState?.weeklySummaryLastError || null,
     timeFit,
   };
 }
@@ -1422,7 +1528,15 @@ function migrateState(raw) {
       injuries: { ...base.constraints.injuries, ...(raw.constraints?.injuries || {}) },
     },
     muscleRecovery: raw.muscleRecovery || createMuscleRecovery(),
-    aiConfig: raw.aiConfig || createAIConfig(),
+    aiConfig: (() => {
+      const mergedAI = { ...createAIConfig(), ...(raw.aiConfig || {}) };
+      const normalizedModel = normalizeGeminiModel(mergedAI.model);
+      return {
+        ...mergedAI,
+        model: normalizedModel,
+        endpoint: buildGeminiEndpoint(normalizedModel),
+      };
+    })(),
     progression: { ...base.progression, ...(raw.progression || {}), exercises: { ...(base.progression.exercises), ...(raw.progression?.exercises || {}) } },
     athleteModel: { ...base.athleteModel, ...(raw.athleteModel || {}), domainScores: { ...base.athleteModel.domainScores, ...(raw.athleteModel?.domainScores || {}) } },
     planState: {
@@ -1431,6 +1545,9 @@ function migrateState(raw) {
       weeklySummary: raw.planState?.weeklySummary || null,
       weeklySummaryGeneratedAt: raw.planState?.weeklySummaryGeneratedAt || null,
       weeklySummaryLoading: false,
+      weeklySummaryCooldownUntil: raw.planState?.weeklySummaryCooldownUntil || null,
+      weeklySummaryLastAttemptAt: raw.planState?.weeklySummaryLastAttemptAt || null,
+      weeklySummaryLastError: raw.planState?.weeklySummaryLastError || null,
     },
     domains: {
       ...base.domains,
@@ -1506,9 +1623,15 @@ function appReducer(state, action) {
       return { ...state, profile: { ...state.profile, [field]: value } };
     }
     case 'UPDATE_AI_CONFIG': {
+      const mergedAI = { ...state.aiConfig, ...(action.payload || {}) };
+      const normalizedModel = normalizeGeminiModel(mergedAI.model);
       return {
         ...state,
-        aiConfig: { ...state.aiConfig, ...action.payload },
+        aiConfig: {
+          ...mergedAI,
+          model: normalizedModel,
+          endpoint: buildGeminiEndpoint(normalizedModel),
+        },
       };
     }
     case 'SET_AI_COACHING': {
@@ -1524,7 +1647,7 @@ function appReducer(state, action) {
       };
     }
     case 'SET_WEEKLY_SUMMARY': {
-      const { summary, loading, generatedAt } = action.payload || {};
+      const { summary, loading, generatedAt, cooldownUntil, lastAttemptAt, lastError } = action.payload || {};
       return {
         ...state,
         planState: {
@@ -1532,6 +1655,9 @@ function appReducer(state, action) {
           weeklySummary: summary !== undefined ? summary : state.planState.weeklySummary,
           weeklySummaryLoading: loading !== undefined ? loading : false,
           weeklySummaryGeneratedAt: generatedAt !== undefined ? generatedAt : state.planState.weeklySummaryGeneratedAt,
+          weeklySummaryCooldownUntil: cooldownUntil !== undefined ? cooldownUntil : state.planState.weeklySummaryCooldownUntil,
+          weeklySummaryLastAttemptAt: lastAttemptAt !== undefined ? lastAttemptAt : state.planState.weeklySummaryLastAttemptAt,
+          weeklySummaryLastError: lastError !== undefined ? lastError : state.planState.weeklySummaryLastError,
         },
       };
     }
@@ -2112,6 +2238,13 @@ function HomeView({ state, dispatch }) {
   const balance = useMemo(() => getSessionBalance(state.sessionLogs), [state.sessionLogs]);
   const priorityList = useMemo(() => getPriorityTypes(balance, state), [balance, state]);
   const recentLogs = useMemo(() => [...state.sessionLogs].reverse().slice(0, 3), [state.sessionLogs]);
+  const weeklySummaryCooldownUntilMs = state.planState.weeklySummaryCooldownUntil
+    ? Date.parse(state.planState.weeklySummaryCooldownUntil)
+    : NaN;
+  const weeklySummaryInCooldown = Number.isFinite(weeklySummaryCooldownUntilMs) && Date.now() < weeklySummaryCooldownUntilMs;
+  const weeklySummaryCooldownMinutes = weeklySummaryInCooldown
+    ? Math.max(1, Math.ceil((weeklySummaryCooldownUntilMs - Date.now()) / 60000))
+    : 0;
   const primary = state.planState.primaryRecommendation || priorityList[0];
   const secondary = state.planState.secondaryRecommendation || priorityList[1];
   const startMicroBreak = () => {
@@ -2130,9 +2263,13 @@ function HomeView({ state, dispatch }) {
   };
 
   // Weekly summary: generate when AI is enabled + week has rolled over or no summary exists
-  React.useEffect(() => {
+  useEffect(() => {
     if (!state.aiConfig?.enabled || !state.aiConfig?.apiKey) return;
     if (state.planState.weeklySummaryLoading) return;
+    const cooldownUntilMs = state.planState.weeklySummaryCooldownUntil
+      ? Date.parse(state.planState.weeklySummaryCooldownUntil)
+      : NaN;
+    if (Number.isFinite(cooldownUntilMs) && Date.now() < cooldownUntilMs) return;
     const weekStart = getWeekStart(new Date()).toISOString().slice(0, 10);
     const generatedAt = state.planState.weeklySummaryGeneratedAt;
     const alreadyThisWeek = generatedAt && generatedAt >= weekStart;
@@ -2141,8 +2278,11 @@ function HomeView({ state, dispatch }) {
       const ws = getWeekStart(new Date()).getTime();
       return new Date(l.timestamp).getTime() >= ws;
     });
-    if (weekLogs.length < 2) return;
-    dispatch({ type: 'SET_WEEKLY_SUMMARY', payload: { loading: true } });
+    if (weekLogs.length < 2) return; // need at least 2 sessions to summarise
+    dispatch({
+      type: 'SET_WEEKLY_SUMMARY',
+      payload: { loading: true, lastAttemptAt: new Date().toISOString(), lastError: null },
+    });
     const weekEnd = new Date().toISOString().slice(0, 10);
     const sessionSummaries = weekLogs.map(l =>
       `- ${l.type}${l.maSubtype ? ' (' + l.maSubtype + ')' : ''}: RPE ${l.rpe}, Quality ${l.completionQuality || '?'}%`
@@ -2169,12 +2309,43 @@ function HomeView({ state, dispatch }) {
     };
     callGeminiWeeklySummary(state.aiConfig.apiKey, state.aiConfig.endpoint, weekContext)
       .then(summary => {
-        dispatch({ type: 'SET_WEEKLY_SUMMARY', payload: { summary, loading: false, generatedAt: weekEnd } });
+        dispatch({
+          type: 'SET_WEEKLY_SUMMARY',
+          payload: {
+            summary,
+            loading: false,
+            generatedAt: weekEnd,
+            cooldownUntil: null,
+            lastError: null,
+          },
+        });
       })
-      .catch(() => {
-        dispatch({ type: 'SET_WEEKLY_SUMMARY', payload: { loading: false } });
+      .catch((err) => {
+        const status = Number(err?.status || 0);
+        if (status === 429) {
+          dispatch({
+            type: 'SET_WEEKLY_SUMMARY',
+            payload: {
+              loading: false,
+              cooldownUntil: new Date(Date.now() + WEEKLY_SUMMARY_COOLDOWN_MS).toISOString(),
+              lastError: err.message || 'Rate limit hit while generating weekly summary.',
+            },
+          });
+          return;
+        }
+        dispatch({
+          type: 'SET_WEEKLY_SUMMARY',
+          payload: { loading: false, lastError: err?.message || 'Weekly summary failed.' },
+        });
       });
-  }, [state.sessionLogs.length, state.aiConfig?.enabled]);
+  }, [
+    state.sessionLogs.length,
+    state.aiConfig?.enabled,
+    state.aiConfig?.apiKey,
+    state.aiConfig?.model,
+    state.planState.weeklySummaryGeneratedAt,
+    state.planState.weeklySummaryCooldownUntil,
+  ]);
 
   return (
     <div className="space-y-6">
@@ -2231,6 +2402,14 @@ function HomeView({ state, dispatch }) {
           </div>
           {state.planState.weeklySummaryLoading && (
             <div className="text-neutral-400 font-mono text-xs animate-pulse">Generating weekly summary...</div>
+          )}
+          {!state.planState.weeklySummaryLoading && state.planState.weeklySummaryLastError && (
+            <div className="text-orange-400 font-mono text-xs">{state.planState.weeklySummaryLastError}</div>
+          )}
+          {!state.planState.weeklySummaryLoading && weeklySummaryInCooldown && (
+            <div className="text-neutral-500 font-mono text-xs">
+              Auto-summary cooling down after throttling. Next attempt in ~{weeklySummaryCooldownMinutes}m.
+            </div>
           )}
           {!state.planState.weeklySummaryLoading && !state.planState.weeklySummary && (
             <div className="text-neutral-600 font-mono text-xs">Complete 2+ sessions this week to generate a recap.</div>
@@ -3531,21 +3710,18 @@ function SettingsView({ state, dispatch }) {
                 placeholder="AIza..."
                 className="w-full bg-neutral-950 border border-neutral-700 px-3 py-2 text-neutral-100 font-mono text-base"
               />
-              <div className="text-neutral-600 font-mono text-xs mt-1">Free tier: gemini-2.0-flash. Get key at aistudio.google.com</div>
+              <div className="text-neutral-600 font-mono text-xs mt-1">Use Gemini 3 Flash Preview or Flash variants. 429s auto-retry; repeated throttling may require a short wait.</div>
             </div>
             <div>
               <div className="text-neutral-500 font-mono text-xs uppercase mb-1">Model</div>
               <select
                 value={state.aiConfig.model}
-                onChange={e => dispatch({ type: 'UPDATE_AI_CONFIG', payload: {
-                  model: e.target.value,
-                  endpoint: `https://generativelanguage.googleapis.com/v1beta/models/${e.target.value}:generateContent`
-                }})}
+                onChange={e => dispatch({ type: 'UPDATE_AI_CONFIG', payload: { model: e.target.value } })}
                 className="w-full bg-neutral-950 border border-neutral-700 px-3 py-2 text-neutral-100 font-mono text-sm"
               >
-                <option value="gemini-2.0-flash">gemini-2.0-flash (free tier)</option>
-                <option value="gemini-1.5-pro">gemini-1.5-pro (paid)</option>
-                <option value="gemini-1.5-flash">gemini-1.5-flash (free tier)</option>
+                <option value="gemini-3-flash-preview">gemini-3-flash-preview (default)</option>
+                <option value="gemini-2.5-flash">gemini-2.5-flash</option>
+                <option value="gemini-flash-latest">gemini-flash-latest</option>
               </select>
             </div>
           </>
