@@ -477,6 +477,158 @@ function parseGeminiJson(text, requestType = 'response') {
   }
 }
 
+function buildCoachResponseSchema() {
+  return {
+    type: 'object',
+    required: ['sessionFocus', 'watchOut', 'exerciseNotes'],
+    properties: {
+      sessionFocus: { type: 'string' },
+      watchOut: { type: 'string' },
+      exerciseNotes: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['exerciseName', 'cue', 'why'],
+          properties: {
+            exerciseName: { type: 'string' },
+            cue: { type: 'string' },
+            why: { type: 'string' },
+          },
+        },
+      },
+    },
+  };
+}
+
+function normalizeCoachPayload(payload, workout = []) {
+  if (!payload || typeof payload !== 'object') throw createGeminiParseError('response', JSON.stringify(payload));
+
+  const workoutNames = (workout || []).map(ex => String(ex?.name || '').trim()).filter(Boolean);
+  const canonicalByLower = Object.fromEntries(workoutNames.map(name => [name.toLowerCase(), name]));
+  const canonicalizeExerciseName = (value) => {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    return canonicalByLower[raw.toLowerCase()] || raw;
+  };
+  const asText = (value, fallback = '') => (typeof value === 'string' ? value.trim() : fallback);
+
+  const exercises = {};
+
+  if (Array.isArray(payload.exerciseNotes)) {
+    for (const note of payload.exerciseNotes) {
+      const exerciseName = canonicalizeExerciseName(note?.exerciseName);
+      if (!exerciseName) continue;
+      const cue = asText(note?.cue);
+      const why = asText(note?.why);
+      if (!cue && !why) continue;
+      exercises[exerciseName] = {
+        cue: cue || 'Stay braced and move with control each rep.',
+        why: why || 'Supports cleaner execution for today\'s session.',
+      };
+    }
+  }
+
+  if (payload.exercises && typeof payload.exercises === 'object' && !Array.isArray(payload.exercises)) {
+    for (const [name, note] of Object.entries(payload.exercises)) {
+      const exerciseName = canonicalizeExerciseName(name);
+      if (!exerciseName) continue;
+      const cue = asText(note?.cue);
+      const why = asText(note?.why);
+      if (!cue && !why) continue;
+      exercises[exerciseName] = {
+        cue: cue || 'Stay braced and move with control each rep.',
+        why: why || 'Supports cleaner execution for today\'s session.',
+      };
+    }
+  }
+
+  const hasStructuredNotes =
+    (Array.isArray(payload.exerciseNotes) && payload.exerciseNotes.length > 0) ||
+    (payload.exercises && typeof payload.exercises === 'object' && Object.keys(payload.exercises).length > 0);
+  if (!hasStructuredNotes) {
+    throw createGeminiParseError('response', JSON.stringify(payload));
+  }
+
+  for (const name of workoutNames) {
+    if (exercises[name]) continue;
+    exercises[name] = {
+      cue: 'Use controlled tempo, full range, and steady bracing.',
+      why: 'Improves quality while keeping fatigue and injury risk in check.',
+    };
+  }
+
+  return {
+    sessionFocus: asText(payload.sessionFocus, 'Prioritize crisp technique and consistent effort this session.'),
+    watchOut: asText(payload.watchOut, 'Scale load or complexity if form degrades or pain appears.'),
+    exercises,
+  };
+}
+
+function tryParseCoachPayload(text, workout = []) {
+  const parsed = parseGeminiJson(text, 'response');
+  return normalizeCoachPayload(parsed, workout);
+}
+
+function buildCoachRepairBody(rawText, workoutNames = []) {
+  const schema = buildCoachResponseSchema();
+  const workoutList = (workoutNames || []).length
+    ? workoutNames.map(name => `- ${name}`).join('\n')
+    : '- none';
+  const boundedRawText = String(rawText || '').slice(0, 6000);
+
+  const prompt = `Convert the RAW MODEL OUTPUT into strict JSON that matches the schema exactly.
+Rules:
+- Return JSON only. No markdown, no explanations.
+- Use exercise names exactly as provided in WORKOUT EXERCISES.
+- Include one exerciseNotes item per workout exercise when available.
+
+WORKOUT EXERCISES:
+${workoutList}
+
+TARGET SCHEMA:
+${JSON.stringify(schema, null, 2)}
+
+RAW MODEL OUTPUT:
+${boundedRawText}`;
+
+  return {
+    contents: [{ parts: [{ text: prompt }] }],
+    generationConfig: {
+      temperature: 0,
+      maxOutputTokens: 768,
+      responseMimeType: 'application/json',
+      responseSchema: schema,
+    },
+  };
+}
+
+async function callGeminiCoachWithRepair({ apiKey, endpoint, primaryBody, workout }) {
+  const primaryData = await callGeminiWithRetry({
+    apiKey,
+    endpoint,
+    body: primaryBody,
+    requestType: 'Session coaching',
+  });
+  const primaryText = extractGeminiText(primaryData);
+
+  try {
+    return tryParseCoachPayload(primaryText, workout);
+  } catch (err) {
+    if (!err?.isGeminiParseError) throw err;
+
+    const workoutNames = (workout || []).map(ex => String(ex?.name || '').trim()).filter(Boolean);
+    const repairBody = buildCoachRepairBody(primaryText, workoutNames);
+    const repairedData = await callGeminiWithRetry({
+      apiKey,
+      endpoint,
+      body: repairBody,
+      requestType: 'Session coaching JSON repair',
+    });
+    const repairedText = extractGeminiText(repairedData);
+    return tryParseCoachPayload(repairedText, workout);
+  }
+}
+
 function buildFallbackCoachingNotes(workout, userContext = {}) {
   const typeLabel = userContext.sessionType
     ? String(userContext.sessionType).replace(/([A-Z])/g, ' $1').toLowerCase()
@@ -973,27 +1125,32 @@ ${workout.map((ex, i) => `${i + 1}. ${ex.name} — ${ex.sets ? ex.sets + '×' + 
 
   const prompt = `${contextText}
 
-Respond ONLY with a valid JSON object (no markdown, no code blocks) in this exact format:
+Respond ONLY with strict JSON (no markdown, no code blocks) in this exact format:
 {
   "sessionFocus": "2 sentences max: what to focus on and why today",
   "watchOut": "1 sentence: biggest risk or thing to be careful about today",
-  "exercises": {
-    "EXERCISE_NAME": {
+  "exerciseNotes": [
+    {
+      "exerciseName": "exact name from TODAY'S WORKOUT",
       "cue": "1 specific coaching cue for this athlete",
       "why": "1 sentence: why this exercise today"
     }
-  }
+  ]
 }`;
 
+  const coachSchema = buildCoachResponseSchema();
   const body = {
     contents: [{ parts: [{ text: prompt }] }],
     systemInstruction: { parts: [{ text: systemPrompt }] },
-    generationConfig: { temperature: 0.4, maxOutputTokens: 1024, responseMimeType: 'application/json' },
+    generationConfig: {
+      temperature: 0.2,
+      maxOutputTokens: 1024,
+      responseMimeType: 'application/json',
+      responseSchema: coachSchema,
+    },
   };
 
-  const data = await callGeminiWithRetry({ apiKey, endpoint, body, requestType: 'Session coaching' });
-  const text = extractGeminiText(data);
-  return parseGeminiJson(text, 'response');
+  return callGeminiCoachWithRepair({ apiKey, endpoint, primaryBody: body, workout });
 }
 
 async function callGeminiWeeklySummary(apiKey, endpoint, weekContext) {
