@@ -1,0 +1,46 @@
+# V7.0 Refactor — AI Personal Fitness Coach
+
+## Phase 1: Foundation
+- [x] Explore V6.2 codebase (CLAUDE.md, README, V3_IMPLEMENTATION_SUMMARY)
+- [x] Write implementation plan (approved)
+- [x] Write new `miyamoto.html` V7.0 (complete rewrite)
+
+## Phase 2: Core App Structure (inside miyamoto.html)
+- [x] CDN head + service worker + PWA manifest
+- [x] Design tokens (new dark-modern theme, accent color system)
+- [x] Inline SVG icon library
+- [x] Global state shape (new V7 shape)
+- [x] `appReducer` with all action types
+- [x] `migrateState()` (V5→V7 compatibility)
+- [x] Core helper functions (generateWorkout, computeSessionPriority, etc.)
+
+## Phase 3: Onboarding (5-step)
+- [x] Step 1 — Name, age, sex, bodyweight
+- [x] Step 2 — Primary goal picker
+- [x] Step 3 — Discipline multi-select
+- [x] Step 4 — Fitness level self-assessment
+- [x] Step 5 — Schedule (days/week + session length)
+- [x] Config generator from onboarding answers
+
+## Phase 4: Views
+- [x] HomeView — AI greeting, recommendation card, weekly snapshot, readiness check, weekly recap
+- [x] TrainView — discipline selector, pre-session AI brief, workout, per-exercise logging
+- [x] SessionCompleteModal — RPE/energy sliders, AI post-session summary
+- [x] ProgressView — Overview tab, per-domain tab, skills tab, muscle map tab
+- [x] HistoryView — session logs with filters
+- [x] SettingsView — all new sections
+
+## Phase 5: AI Layer
+- [x] `callGeminiAPI()` — updated with richer system prompt
+- [x] `callPreSessionBrief()` — 3-bullet pre-workout brief
+- [x] `callPostSessionSummary()` — structured post-session analysis
+- [x] `callWeeklySummary()` — goal-progress-aware weekly recap
+- [x] AI Chat Panel on Home
+
+## Phase 6: Verification
+- [x] Code+smoke verification on canonical runtime (`index.html`)
+- [x] Contract checks for V7 actions/state keys/AI function signatures
+- [x] PWA checks (`sw.js` registration, cache versioning, manifest/icons precache)
+- [x] JSX parity checks against runtime script body
+- [x] Screenshot artifacts intentionally skipped (not required for this delivery)
+- [x] Update CLAUDE.md to reflect V7.0

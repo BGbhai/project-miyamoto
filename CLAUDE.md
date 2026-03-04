@@ -1,6 +1,6 @@
 # PROJECT MIYAMOTO — MASTER BRIEFING FILE
 
-> **Last updated:** 2026-03-03 (v6.2)
+> **Last updated:** 2026-03-04 (v7.0)
 > **This file is the single source of truth. Read it fully before doing anything.**
 
 ---
@@ -32,7 +32,8 @@ This project has **three participants**:
 **Codex's rules:**
 - Read this entire file before writing any code
 - Read the actual source files before editing — never guess at the current code
-- Always edit both `adaptive_training_platform.jsx` AND `miyamoto.html` (see parity rules below)
+- Runtime source of truth is `index.html`; keep `adaptive_training_platform.jsx` in parity with `index.html`
+- `miyamoto.html` is archived legacy and should remain unchanged unless explicitly requested
 - Leave notes in MESSAGES FROM CODEX TO CLAUDE after completing tasks
 - Move completed tasks to the COMPLETED CODEX TASKS archive
 
@@ -40,31 +41,30 @@ This project has **three participants**:
 
 ## 📍 CURRENT STATUS
 
-**App version:** V6.2
-**Both files status:** In parity ✅
-**JSX file:** `adaptive_training_platform.jsx` (~3660 lines)
-**HTML file:** `miyamoto.html` (~3739 lines)
-**localStorage key:** `miyamoto_v5`
+**App version:** V7.0
+**Runtime status:** `index.html` canonical ✅
+**JSX parity target:** `adaptive_training_platform.jsx` (module runtime parity with index)
+**Legacy HTML:** `miyamoto.html` (archived, unchanged)
+**localStorage key:** `miyamoto_v7` (legacy import supported from `miyamoto_v5`)
 
 **What's working:**
-- 4 session types: gym (strength + skills), martialArts, running, mobility
+- Multi-discipline engine with dynamic profile disciplines (`gym`, `calisthenics`, `running`, `martial_arts`, `mobility`, `cycling`, `yoga`, `hiit`) plus `custom` session builder
 - Muscle recovery tracking across 12 muscle groups with fatigue/recovery/fresh status
-- Time-aware workout generation (30/45/60/75/90 min picker)
-- Gemini Flash AI coaching (optional, settings toggle + API key)
+- Time-aware workout generation (30/45/60/90 min picker) with injury filters, blocked-pattern filters, and custom substitutions
+- Gemini AI coaching (optional, settings toggle + API key) with pre-brief, post-session summary, weekly summary, and chat
 - Per-exercise logging (sets done, top set, exercise RPE, pain flag)
-- Calisthenics skill progression with 5 skills × multiple levels
-- Sparring subtype picker for martial arts (technical/conditioning/sparring)
-- RoundTimer component for timed exercises
+- Calisthenics + running + martial arts skill progression rendering in dynamic Skills tab
+- Martial arts subtype picker (`striking` / `grappling` / `general`)
 - Exercise SWAP button with 4 alternatives
 - Block periodization (accumulation/intensification/realization/deload)
-- Readiness check (sleep/stress/soreness/motivation)
-- Progress view with per-exercise recharts sparklines (RPE trend + last top metric)
-- History view with session filters + adaptation outcomes + running pace display
-- Settings: AI coach, weekly schedule, skill assessments, injury flags, export/import
-- AI weekly summary card on Home (auto-generates after 2+ sessions/week when AI enabled)
+- Readiness check (sleep/stress/soreness/motivation/energyLevel)
+- Progress view: 28-day consistency heatmap, bodyweight trend, weekly volume, per-domain projection, dynamic skills
+- History view with discipline filters + detailed per-exercise log expansion
+- Settings: Goal Recalibration, Discipline Manager, AI Persona, Accent Color, AI Coach, Constraints, V5 Import, Data
+- PWA runtime: explicit `sw.js` registration + `manifest.webmanifest` + icon links
 
 **Known issues / not yet built:**
-- Nothing critical — all planned V6.x features are implemented
+- Browser-level visual/screenshot validation is manual and optional (code+smoke validation is complete)
 
 ---
 
@@ -85,43 +85,38 @@ An **adaptive, intelligent martial arts + strength training PWA** for BG. Acts a
 
 ## 🔧 TECHNICAL ARCHITECTURE (for Claude + Codex)
 
-**Stack:** React (useReducer, useState, useMemo, useEffect, useRef), Tailwind CSS, recharts, inline SVG icons. Two files: `.jsx` (source for Claude.ai artifact) and `.html` (self-contained PWA).
+**Stack:** React (useReducer, useState, useMemo, useEffect, useRef), Tailwind CSS, recharts, inline SVG icons. Runtime is `index.html` + `sw.js` + `manifest.webmanifest`; module mirror is `adaptive_training_platform.jsx`.
 
-**State shape (top level):**
+**State shape (top level, V7):**
 ```
-view, onboarded, onboardStep
-profile           — name, age, bodyweight, currentBlock, blockWeek, sessionCount,
-                    timeByDay, skillAssessments, primaryGoal, goals
-programConfig     — mode, coachStyle, defaultSessionMinutes, adaptationAggressiveness
-athleteModel      — domainScores, fatigueDebt, consistencyScore, readinessTrend
+view, onboarded, onboardStep, version
+profile           — name, age, sex, bodyweight, goal, disciplines[], fitnessLevels{}, daysPerWeek, sessionMinutes, accentColor
+programConfig     — currentBlock, blockWeek, adaptationAggressiveness, coachPersona
+athleteModel      — domainScores{}, fatigueDebt, consistencyScore, readinessTrend, streakDays, lastSessionDate
 progression       — exercises{}, skills{}, stalledItems[], deloadRecommended, highRPEStreak
-readiness         — inputs{sleep,stress,soreness,motivation}, score, band
-planState         — primaryRecommendation, secondaryRecommendation, progressionPrompts[]
-constraints       — injuries{shoulder,back,knee}, blockedPatterns[]
-muscleRecovery    — {quads,hamstrings,glutes,chest,back,shoulders,arms,core,
-                     lowerBack,hipFlexors,calves,fullBody} each: {lastTrained, recoveryHours, status}
-aiConfig          — enabled, apiKey, model, endpoint, coachingNotes, coachingLoading
-decisionLog       — []
-domains           — strength, calisthenics, striking, grappling, mobility, conditioning
+readiness         — inputs{sleep,stress,soreness,motivation,energyLevel}, score, band, lastUpdated
+muscleRecovery    — per-muscle recovery model with status
+aiConfig          — enabled, apiKey, model, endpoint
+aiMemory          — coachingNotes[], weeklySummary, weeklyGoalCheck, postSessionSummary, chatHistory, preBrief
+planState         — recommendation, secondaryRec, progressionPrompts[]
+constraints       — injuries{}, blockedPatterns[], customSubstitutions{}
 sessionLogs       — []
 activeSession     — null or current session object
-currentSessionType, currentMASubtype
+currentSessionType, decisionLog
 ```
 
 **Key functions:**
-- `generateWorkout(type, state, maSubtype, intensityTag, timeMinutes)` — builds exercise list
+- `generateWorkout(type, state, maSubtype, timeMinutes)` — builds exercise list with constraints/substitutions
 - `computeSessionPriority(state)` — scores session types for recommendation
-- `completeSessionInternal(state, payload)` — handles session completion, updates all state
-- `updateMuscleRecovery(muscleRecovery, exercises)` — updates fatigue after session
-- `callGeminiAPI(apiKey, endpoint, userContext, workout)` — async Gemini call
-- `enrichExercise(item, domain, group, idx)` — adds stable ID + metadata to exercises
+- `callPreSessionBrief(state, sessionType, dispatch)` — AI pre-session briefing
+- `callPostSessionSummary(state, sessionLog, dispatch)` — AI post-session summary + storage
+- `callWeeklySummary(state, dispatch)` — weekly recap with goal-progress check
+- `callGeminiAPI(apiKey, endpoint, model, prompt)` — async Gemini call
 - `migrateState(state)` — backward-compat layer for old localStorage saves
 
 **Session types + frequency targets:**
-- `gym` → 4×/week — strength (55%) + calisthenics skills (45%)
-- `martialArts` → 3×/week — striking or grappling (alternates), 3 subtypes
-- `running` → 3×/week — zone-based workouts
-- `mobility` → 2×/week
+- Dynamic from `profile.disciplines`; defaults and frequency targets use:
+  `gym:4`, `calisthenics:3`, `running:3`, `martial_arts:3`, `mobility:2`, `cycling:3`, `yoga:2`, `hiit:2`
 
 **Outcome logic per exercise:**
 - `setsCompleted < 60% of prescribed` → regress
@@ -133,12 +128,10 @@ currentSessionType, currentMASubtype
 **JSX vs HTML file differences:**
 | JSX file | HTML file |
 |---|---|
-| `import React, { useState, ... }` at top | No imports |
-| Destructured hooks: `useState(...)` | Namespaced: `React.useState(...)` |
-| No localStorage | localStorage persistence at bottom |
-| No CDN scripts | CDN scripts at top (React, ReactDOM, Recharts, prop-types, Tailwind, Babel) |
-| Uses lucide-react imports | Uses inline SVG icon components |
-| No service worker | Inline service worker for offline PWA |
+| `import React ...` + `import { ... } from 'recharts'` | CDN scripts + Babel (`text/babel`) |
+| No root mount (`export default App`) | Mounts with `ReactDOM.createRoot(...)` |
+| Mirrors runtime logic for parity | Canonical runtime + localStorage persistence + SW registration |
+| Module/bundler context | Self-contained deployable PWA entry |
 
 ---
 
@@ -157,7 +150,7 @@ currentSessionType, currentMASubtype
 
 ---
 
-*No pending tasks — all backlog items are complete as of V6.2.*
+*No pending tasks — V7.0 spec-complete implementation delivered.*
 
 ---
 
@@ -166,18 +159,21 @@ currentSessionType, currentMASubtype
 
 | Rule | Detail |
 |---|---|
-| **Parity** | Every change to `adaptive_training_platform.jsx` MUST be mirrored in `miyamoto.html`. Same logic, different syntax. |
-| **HTML hooks** | HTML file uses `React.useState`, `React.useEffect`, `React.useMemo`, `React.useRef` — NOT destructured. JSX file uses destructured imports. |
-| **No lucide in HTML** | HTML file defines 10 inline SVG icon components at the top of the babel script, right after the CDN globals (Home, Dumbbell, TrendingUp, List, Settings, ArrowLeft, Download, Upload, Zap, AlertTriangle). Never import or CDN lucide-react in the HTML file. Any new icons added to the JSX file must also be added as inline SVGs to the HTML file. |
-| **Aesthetic** | `bg-neutral-950` backgrounds · `text-neutral-100` text · `text-red-500`/`text-red-600` accents · `font-mono` everywhere · UPPERCASE labels. No exceptions. |
-| **Single file** | Do not create new files. One JSX, one HTML. No separate CSS, no component files. |
+| **Parity** | Every behavior change in `index.html` MUST be mirrored in `adaptive_training_platform.jsx`. |
+| **Runtime target** | Deploy and validate from `index.html` first; keep `miyamoto.html` as historical archive. |
+| **HTML hooks** | `index.html` uses destructured React hooks from global `React` in the Babel block. JSX file uses module imports. |
+| **No lucide in HTML** | HTML remains inline-SVG based. |
+| **Aesthetic** | V7 dark-modern design tokens and accent system (not legacy mono/red-only rules). |
+| **Runtime files** | Keep `index.html`, `sw.js`, and `manifest.webmanifest` consistent for PWA behavior. |
+| **No file sprawl** | Avoid introducing extra runtime source files; maintain canonical `index.html` + parity JSX workflow. |
 | **Reducer only** | All state changes via `appReducer` named action types. Never mutate state directly. |
 | **migrateState** | Any new state key (top-level or nested inside `profile`, `domains`, `progression`) needs a fallback added to `migrateState()`. |
 | **Read first** | JSX file is ~3459 lines. Read the section before editing. Never guess at current code. |
 
 **File paths:**
-- JSX → `/sessions/festive-upbeat-bohr/mnt/Project_Miyamoto/adaptive_training_platform.jsx`
-- HTML → `/sessions/festive-upbeat-bohr/mnt/Project_Miyamoto/miyamoto.html`
+- JSX → `/Users/bg/Desktop/Learning/Project_Miyamoto/adaptive_training_platform.jsx`
+- Runtime HTML → `/Users/bg/Desktop/Learning/Project_Miyamoto/index.html`
+- Archived legacy HTML → `/Users/bg/Desktop/Learning/Project_Miyamoto/miyamoto.html`
 
 ---
 
@@ -296,13 +292,11 @@ What I did: Removed stray `import { LineChart, Line, ResponsiveContainer, Toolti
 
 ## 🎨 PREFERENCES & NON-NEGOTIABLE RULES
 
-**Aesthetic — dark brutalist / tactical:**
-- Backgrounds: `bg-neutral-950` (darkest), `bg-neutral-900` (cards)
-- Body text: `text-neutral-100`
-- Accents: `text-red-500`, `text-red-600`, `border-red-500`
-- All text: `font-mono`
-- All labels: UPPERCASE
-- Never introduce light themes, soft colors, or rounded-corner cards
+**Aesthetic — V7 dark-modern coaching UI:**
+- Design token driven with dynamic accent color per user
+- Mixed typography (sans for UI/prose, mono for compact metrics)
+- Rounded cards/buttons with sharp CTA emphasis
+- Sentence case labels with selective emphasis
 
 **Architecture:**
 - Single file — no splitting. One JSX, one HTML.
@@ -316,8 +310,9 @@ What I did: Removed stray `import { LineChart, Line, ResponsiveContainer, Toolti
 - lucide-react is fine in JSX file (Claude.ai artifact env has it at v0.263.1)
 
 **Data persistence:**
-- HTML file: localStorage key `miyamoto_v5`
-- JSX file: JSON export/import buttons in Settings (no localStorage)
+- Runtime/HTML localStorage key: `miyamoto_v7`
+- Legacy import source key: `miyamoto_v5`
+- JSX parity app persists with the same state contract
 
 **BG's training context:**
 - Intermediate level, 6 days/week, AM+PM possible

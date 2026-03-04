@@ -1,0 +1,242 @@
+# Project Miyamoto → AI Personal Fitness Coach
+## Refactor Plan — V7.0
+
+### Background & Why
+
+The current V6.2 app is a highly personalized martial-arts + strength tracker built for a single user (BG). It works, but it has several compounding issues:
+
+- **Tight identity coupling** — BG's exact goals (BJJ, Muay Thai, handstand, Muay Thai sparring) are hard-coded into workout generators, domain names, and UI labels. Making it usable for anyone else means ripping out 40+ constants.
+- **Accumulated complexity debt** — ~3,700 lines of spaghetti state: `migrateState()` patches on top of patches, reducer action types from 5 different rewrites, dead props (`currentMASubtype` living top-level next to `activeSession`), and fragile workout generators that mix business logic with UI code.
+- **AI is an afterthought** — Gemini is a toggle in Settings, an optional API key, and fires one coaching note per-session. It's not the brain — it's a footnote. The app should be *led* by AI.
+- **UX is dated** — Dark brutalist mono is cool but limits appeal and readability for a general audience.
+- **No goal system** — The app assumes BG's goals. Real fitness coaching starts by asking what you want.
+
+---
+
+## User Review Required
+
+> [!IMPORTANT]
+> **Complete rewrite, not incremental** — This plan proposes writing a new `miyamoto.html` from scratch (and a matching `.jsx`). The V6.2 code and localStorage key (`miyamoto_v5`) will be preserved during development. When the new V7.0 version is ready, it will use a new localStorage key (`miyamoto_v7`). Your old data can be exported from V6.2 before switching. A migration utility will be included in Settings.
+
+> [!WARNING]
+> **BG-specific hardcoding removed** — Domain names (striking, grappling), session types (martialArts), and skill trees (muscle-up, handstand) become *configurable* through onboarding. You'll still be able to configure the app to match your current exact setup — it just won't be hardcoded anymore.
+
+> [!NOTE]
+> **Same tech stack** — React + Tailwind + Recharts + Gemini API. Still a self-contained PWA HTML file. No new dependencies. Still works offline via service worker.
+
+---
+
+## Design Philosophy → V7.0
+
+| Old (V6.2) | New (V7.0) |
+|---|---|
+| Dark brutalist mono | Premium dark-modern with system font stack |
+| `font-mono` everywhere | Mono for data, sans for prose |
+| Hard red accents only | Accent color chosen per user goal (red/blue/green/purple) |
+| UPPERCASE labels | Sentence case with selective caps for emphasis |
+| Sharp borders, no radius | Subtle radius (4-8px) for cards, sharp for CTAs |
+| AI is optional footnote | AI is the primary coach interface |
+
+---
+
+## Proposed Changes
+
+### Core Architecture
+
+#### [MODIFY] miyamoto.html → V7.0 complete rewrite
+#### [MODIFY] adaptive_training_platform.jsx → V7.0 complete rewrite
+
+The files will be rewritten as a clean slate. The architecture remains the same pattern (single file, `useReducer`, Tailwind, Recharts, Gemini API) but with a completely restructured state shape and new UI.
+
+---
+
+### 1. Onboarding Redesign
+
+**Current:** 2-step (name → age/bodyweight)
+
+**New:** 5-step smart onboarding that configures the entire coaching engine:
+
+| Step | What it collects |
+|---|---|
+| 1 — Who are you? | Name, age, biological sex, bodyweight |
+| 2 — What's your goal? | Picker: Fat Loss / Muscle Gain / Strength / Endurance / Sport Performance / General Fitness |
+| 3 — What do you train? | Multi-select: Gym (weights), Calisthenics, Running, Martial Arts, Cycling, Sport, Yoga/Mobility |
+| 4 — How fit are you? | Quick self-assessment: Beginner / Intermediate / Advanced per selected discipline |
+| 5 — Your schedule | Days/week + preferred session length |
+
+From these 5 steps, the app **generates a personalized initial config** — session types, frequency targets, exercise selection filter, block periodization start point, and AI coaching persona.
+
+---
+
+### 2. New State Shape (V7.0)
+
+```
+profile          — name, age, sex, bodyweight, goal, disciplines[], fitnessLevels{}, 
+                   daysPerWeek, sessionMinutes, accentColor
+programConfig    — currentBlock, blockWeek, adaptationAggressiveness, coachPersona
+athleteModel     — domainScores{}, fatigueDebt, consistencyScore, readinessTrend, streakDays
+progression      — exercises{}, skills{}, stalledItems[], deloadRecommended, highRPEStreak
+readiness        — inputs{sleep, stress, soreness, motivation, energyLevel}, score, band
+muscleRecovery   — dynamic: generated from selected disciplines
+aiConfig         — enabled, apiKey, model, endpoint
+aiMemory         — coachingNotes[], weeklySummary, weeklyGoalCheck, lastSummaryAt
+planState        — recommendation, secondaryRec, progressionPrompts[]
+constraints      — injuries{}, blockedPatterns[], customSubstitutions{}
+sessionLogs      — []
+activeSession    — null | current session
+```
+
+Key changes:
+- `disciplines[]` replaces hardcoded session types — everything derives from user's declared disciplines
+- `aiMemory` replaces scattered `coachingNotes` and `weeklySummary` fields — AI has a proper memory object
+- `accentColor` per-user theming
+- `energyLevel` added to readiness (5th input, currently missing from V6.2)
+- `customSubstitutions` — user can override any exercise substitution
+
+---
+
+### 3. AI Coach — The New Brain
+
+The AI layer gets fundamentally upgraded from "notes on a card" to "the thing running the app."
+
+#### 3a. AI Coach Chat Panel (NEW)
+A persistent **chat interface** on the Home screen where the user can talk to their AI coach. The coach:
+- Answers questions about today's training
+- Explains why an exercise is being recommended
+- Adjusts the day's plan based on what you tell it
+- Remembers previous sessions via `aiMemory.coachingNotes[]`
+
+The chat uses `callGeminiAPI()` with a rich system prompt that includes:
+- User profile + goals
+- This week's session history
+- Today's readiness score
+- Current progression state
+- Last AI coaching note
+
+#### 3b. Pre-Session Brief (NEW)
+When the user starts a session, the AI generates a **3-bullet brief** before the workout begins:
+- Today's training focus
+- Key adaptation cue (e.g., "your quads are fresh — push leg volume")
+- One coaching reminder (form, mindset, or pacing)
+
+#### 3c. Post-Session Summary (IMPROVED)
+The existing post-session coaching note gets more structure:
+- Performance verdict (Advanced / Held / Regressed — and why)
+- Top insight from this session
+- What to focus on next session
+
+#### 3d. Weekly Recap (IMPROVED from V6.2)
+Existing `⚡ WEEKLY RECAP` card on Home is kept but given richer structure and a "Goal Progress" indicator showing proximity to the user's declared weekly goal.
+
+---
+
+### 4. Home Screen Redesign
+
+**Current:** Profile summary → Session Balance → Recent logs → Readiness check
+
+**New:**
+
+```
+┌─────────────────────────────────────┐
+│ COACH GREETING (AI, personalized)   │
+│ "Morning BG. Legs are fresh.        │
+│  Today's optimal: Gym, 60 min"      │
+├─────────────────────────────────────┤
+│ TODAY'S RECOMMENDATION (big card)   │
+│ [type] [time] [muscles fresh/tired] │
+│ [START THIS SESSION] button         │
+├─────────────────────────────────────┤
+│ WEEKLY SNAPSHOT                     │
+│ 3/6 sessions done · 65% goal       │
+│ [streak badge] [recovery ring]      │
+├─────────────────────────────────────┤
+│ WEEKLY AI RECAP (when available)    │
+├─────────────────────────────────────┤
+│ QUICK READINESS CHECK (5 sliders)   │
+└─────────────────────────────────────┘
+```
+
+The "coach greeting" is statically generated from local state if AI is off, or calls Gemini if AI is on.
+
+---
+
+### 5. Training Session Flow (IMPROVED)
+
+**Current:** Pick type → Workout → Complete → RPE modal → Done
+
+**New:**
+
+```
+Pick type  →  AI Pre-Session Brief  →  Workout (unchanged core)  
+   →  Per-exercise logging (unchanged)  →  RPE modal (+ energyLevel)  
+   →  AI Post-Session Summary  →  Done
+```
+
+- The session picker now uses the **user's configured disciplines** instead of hardcoded types
+- A new **Custom Session** option lets the user build a session manually
+
+---
+
+### 6. Progress View (IMPROVED)
+
+- **Overview tab** — Body composition trend, weekly volume, consistency heatmap (GitHub-style)
+- **Per-Domain tab** — Same sparklines as V6.2 but with projected trendlines
+- **Skills tab** — Same calisthenics tree but now generalized to any skill progression the user defines during onboarding
+- **Muscle Map tab** (NEW) — Visual body silhouette showing muscle fatigue status (color-coded fresh/recovering/fatigued) using inline SVG
+
+---
+
+### 7. Settings (EXPANDED)
+
+New sections added:
+- **Goal Recalibration** — Change primary goal without full reset
+- **Discipline Manager** — Add/remove disciplines post-onboarding
+- **AI Persona** — Choose coaching style (Drill Sergeant / Friendly Coach / Data Nerd / Silent)
+- **Accent Color** — 6 presets
+- **V6 Data Import** — Migrate from old `miyamoto_v5` localStorage key
+
+---
+
+### 8. Bug Fixes (from V6.2 — addressed in rewrite)
+
+| Bug | Fix |
+|---|---|
+| `BackdropFilter` crash in transparent context | Removed — not used in new design system |
+| Login/state race condition | N/A (no auth), but `migrateState()` race is resolved by clean initial state |
+| Shimmer animation always running | New design uses CSS transitions, not always-on shimmer |
+| Recharts `import` in Babel block (blank page) | Fixed in new clean file structure |
+| Stale `weeklyKmResetAt` on import | Clean `migrateState()` with version guard |
+| Dead props littering top-level state | Removed in new state shape |
+
+---
+
+## Verification Plan
+
+### Automated Tests
+No test framework currently exists. As part of this refactor:
+- A `test_miyamoto.html` scratch file will be created in `/tmp/` that exercises core logic functions:
+  - `generateWorkout()` for each discipline
+  - `computeSessionPriority()` scoring
+  - `completeSessionInternal()` state transitions
+  - `migrateState()` from V5 data
+
+Run by opening `file:///tmp/test_miyamoto.html` in a browser — results print to page.
+
+### Manual Verification (Browser)
+1. Open `miyamoto.html` in Chrome/Safari
+2. **Onboarding flow** — complete all 5 steps, verify config is generated correctly
+3. **Home screen** — verify greeting, recommendation card, weekly snapshot all render
+4. **Start a session** — verify pre-session AI brief loads (with valid Gemini API key)
+5. **Complete session** — verify RPE modal, post-session summary, history log
+6. **Progress view** — verify all 4 tabs render, muscle map colors correctly
+7. **Settings** — verify all new sections present, accent color changes theme
+8. **Offline test** — disable network, reload — verify app still loads from service worker
+
+### Browser Subagent Validation
+After writing the new file, a browser subagent will:
+1. Load `miyamoto.html` 
+2. Screenshot the onboarding flow
+3. Screenshot the Home screen post-onboarding
+4. Screenshot the Train view
+5. Screenshot the Progress view
+6. Confirm no console errors

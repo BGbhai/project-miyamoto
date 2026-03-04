@@ -367,8 +367,13 @@ function getMuscleRecoveryAdvice(muscleRecovery) {
   return { fatiguedMuscles: fatigued, recoveringMuscles: recovering, recoveryScore: clamp(score, 0, 100) };
 }
 
-const GEMINI_ALLOWED_MODELS = ['gemini-3-flash-preview', 'gemini-2.5-flash', 'gemini-flash-latest'];
+const GEMINI_ALLOWED_MODELS = ['gemini-3-flash-preview', 'gemini-3.1-flash-lite-preview', 'gemini-2.5-flash', 'gemini-flash-latest'];
 const GEMINI_DEFAULT_MODEL = 'gemini-3-flash-preview';
+const GEMINI_LEGACY_MODEL_MAP = {
+  'gemini-1.5-flash': GEMINI_DEFAULT_MODEL,
+  'gemini-1.5-pro': GEMINI_DEFAULT_MODEL,
+  'gemini-2.0-flash': GEMINI_DEFAULT_MODEL,
+};
 const GEMINI_RETRY_DELAYS_MS = [1500, 3000, 6000];
 const WEEKLY_SUMMARY_COOLDOWN_MS = 12 * 60 * 60 * 1000;
 const AI_PLAN_REQUEST_TIMEOUT_MS = 25000;
@@ -380,7 +385,8 @@ const AI_PLANNER_ALLOWED_TYPES = new Set(SESSION_TYPES);
 const AI_PRIMARY_PLAN_SOURCES = new Set(['ai', 'ai_guardrail_corrected']);
 
 function normalizeGeminiModel(model) {
-  return GEMINI_ALLOWED_MODELS.includes(model) ? model : GEMINI_DEFAULT_MODEL;
+  const mappedModel = GEMINI_LEGACY_MODEL_MAP[model] || model;
+  return GEMINI_ALLOWED_MODELS.includes(mappedModel) ? mappedModel : GEMINI_DEFAULT_MODEL;
 }
 
 function buildGeminiEndpoint(model) {
@@ -6821,7 +6827,7 @@ function SettingsView({ state, dispatch }) {
                 placeholder="AIza..."
                 className="w-full bg-neutral-950 border border-neutral-700 px-3 py-2 text-neutral-100 font-mono text-base"
               />
-              <div className="text-neutral-600 font-mono text-xs mt-1">Use Gemini 3 Flash Preview or Flash variants. 429s auto-retry; repeated throttling may require a short wait.</div>
+              <div className="text-neutral-600 font-mono text-xs mt-1">Use Gemini 3 Flash Preview or Flash variants. Deprecated saved model IDs auto-upgrade. 429s auto-retry; repeated throttling may require a short wait.</div>
             </div>
             <div>
               <div className="text-neutral-500 font-mono text-xs uppercase mb-1">Model</div>
@@ -6831,6 +6837,7 @@ function SettingsView({ state, dispatch }) {
                 className="w-full bg-neutral-950 border border-neutral-700 px-3 py-2 text-neutral-100 font-mono text-sm"
               >
                 <option value="gemini-3-flash-preview">gemini-3-flash-preview (default)</option>
+                <option value="gemini-3.1-flash-lite-preview">gemini-3.1-flash-lite-preview (lightweight)</option>
                 <option value="gemini-2.5-flash">gemini-2.5-flash</option>
                 <option value="gemini-flash-latest">gemini-flash-latest</option>
               </select>
@@ -6843,6 +6850,7 @@ function SettingsView({ state, dispatch }) {
                 className="w-full bg-neutral-950 border border-neutral-700 px-3 py-2 text-neutral-100 font-mono text-sm"
               >
                 <option value="gemini-3-flash-preview">gemini-3-flash-preview (default)</option>
+                <option value="gemini-3.1-flash-lite-preview">gemini-3.1-flash-lite-preview (lightweight)</option>
                 <option value="gemini-2.5-flash">gemini-2.5-flash</option>
                 <option value="gemini-flash-latest">gemini-flash-latest</option>
               </select>

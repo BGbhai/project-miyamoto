@@ -1,8 +1,7 @@
-const CACHE_NAME = 'miyamoto-v3';
+const CACHE_NAME = 'miyamoto-v7-cache-2026-03-04';
 const PRECACHE_URLS = [
   './',
   './index.html',
-  './miyamoto.html',
   './manifest.webmanifest',
   './icons/icon-192.png',
   './icons/icon-512.png',
@@ -28,9 +27,7 @@ function isNavigationRequest(request) {
 }
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(PRECACHE_URLS))
-  );
+  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(PRECACHE_URLS)));
   self.skipWaiting();
 });
 
@@ -47,14 +44,14 @@ async function handleNavigationRequest(request) {
     const response = await fetch(request);
     await cacheIfValid(request, response);
     return response;
-  } catch (err) {
+  } catch {
     const cache = await caches.open(CACHE_NAME);
-    const fallback =
+    return (
       (await cache.match(request, { ignoreSearch: true })) ||
-      (await cache.match('./')) ||
       (await cache.match('./index.html')) ||
-      (await cache.match('./miyamoto.html'));
-    return fallback || Response.error();
+      (await cache.match('./')) ||
+      Response.error()
+    );
   }
 }
 
@@ -73,11 +70,9 @@ async function handleAssetRequest(request) {
 self.addEventListener('fetch', (event) => {
   const request = event.request;
   if (!isSameOriginGet(request)) return;
-
   if (isNavigationRequest(request)) {
     event.respondWith(handleNavigationRequest(request));
     return;
   }
-
   event.respondWith(handleAssetRequest(request));
 });

@@ -1,7235 +1,3100 @@
-import React, { useState, useReducer, useMemo, useEffect, useRef } from 'react';
-import { Home, Dumbbell, TrendingUp, List, Settings, ArrowLeft, Download, Upload, Zap, AlertTriangle } from 'lucide-react';
-import { LineChart, Line, ResponsiveContainer, Tooltip } from 'recharts';
+import React, { useState, useReducer, useMemo, useEffect, useRef, useCallback } from 'react';
+import { LineChart, Line, ResponsiveContainer, Tooltip, AreaChart, Area, XAxis, YAxis } from 'recharts';
 
-const FREQUENCY_TARGETS = {
-  gym:        { perWeek: 4, label: 'STRENGTH & SKILLS', color: 'text-yellow-400', icon: '🏋️' },
-  martialArts:{ perWeek: 3, label: 'MARTIAL ARTS',      color: 'text-red-500',    icon: '🥊' },
-  running:    { perWeek: 3, label: 'RUNNING',            color: 'text-blue-400',   icon: '🏃' },
-  mobility:   { perWeek: 2, label: 'MOBILITY',           color: 'text-purple-400', icon: '🧘' },
+
+// ─── ACCENT COLORS ──────────────────────────────────────────────────────────
+const ACCENT_COLORS = {
+  red:    { css: '#ef4444', dim: 'rgba(239,68,68,0.15)',   border: 'rgba(239,68,68,0.4)',   label: 'Red' },
+  blue:   { css: '#3b82f6', dim: 'rgba(59,130,246,0.15)',  border: 'rgba(59,130,246,0.4)',  label: 'Blue' },
+  green:  { css: '#22c55e', dim: 'rgba(34,197,94,0.15)',   border: 'rgba(34,197,94,0.4)',   label: 'Green' },
+  purple: { css: '#a855f7', dim: 'rgba(168,85,247,0.15)',  border: 'rgba(168,85,247,0.4)',  label: 'Purple' },
+  orange: { css: '#f97316', dim: 'rgba(249,115,22,0.15)',  border: 'rgba(249,115,22,0.4)',  label: 'Orange' },
+  cyan:   { css: '#06b6d4', dim: 'rgba(6,182,212,0.15)',   border: 'rgba(6,182,212,0.4)',   label: 'Cyan' },
 };
 
-const SESSION_TYPES = Object.keys(FREQUENCY_TARGETS);
-const DOMAIN_KEYS = ['strength', 'calisthenics', 'striking', 'grappling', 'conditioning', 'mobility'];
-
-function clamp(v, min, max) {
-  return Math.max(min, Math.min(max, v));
+function applyAccent(key) {
+  const a = ACCENT_COLORS[key] || ACCENT_COLORS.red;
+  document.documentElement.style.setProperty('--accent', a.css);
+  document.documentElement.style.setProperty('--accent-dim', a.dim);
+  document.documentElement.style.setProperty('--accent-border', a.border);
 }
 
-function toNum(v, fallback = 0) {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : fallback;
-}
-
-function parseMmSsToSeconds(value) {
-  if (typeof value !== 'string') return null;
-  const match = value.trim().match(/^(\d{1,3}):([0-5]\d)$/);
-  if (!match) return null;
-  const minutes = Number(match[1]);
-  const seconds = Number(match[2]);
-  if (!Number.isFinite(minutes) || !Number.isFinite(seconds)) return null;
-  return (minutes * 60) + seconds;
-}
-
-function formatPace(secondsPerKm) {
-  if (!Number.isFinite(secondsPerKm) || secondsPerKm <= 0) return '—';
-  const totalSeconds = Math.round(secondsPerKm);
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
-}
-
-function slugify(value) {
-  return String(value || 'item')
-.toLowerCase()
-.replace(/[^a-z0-9]+/g, '-')
-.replace(/(^-|-$)/g, '');
-}
-
-function createProgramConfig() {
-  const timezone = (() => {
-try {
-  return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-} catch (err) {
-  return 'UTC';
-}
-  })();
-  return {
-mode: 'rolling',
-coachStyle: 'adaptive-flexible',
-defaultSessionMinutes: 60,
-adaptationAggressiveness: 'moderate',
-planningMode: 'ai_primary_guardrailed',
-aiInterviewMode: 'daily_required',
-aiPlanHorizonDays: 7,
-slotReassignPolicy: 'bounded_reassign',
-priorityProfile: 'balanced_complete_athlete',
-exerciseSelectionStrategy: 'progress_history_v2',
-historyLookbackDays: 30,
-hardNoRepeatDays: 2,
-gymAnchorCount: 2,
-dailyVariationSeedMode: 'date_type',
-equipmentProfile: 'full_gym_bodyweight',
-scheduleMode: 'weekday_fixed',
-weekdayMorningTime: '07:30',
-weekdayEveningTime: '19:00',
-scheduleTimezone: timezone,
-sessionGraceMinutes: 90,
-useWearable: false,
-featureFlags: {
-  adaptiveEngine: true,
-  legacyRandom: false,
-},
-  };
-}
-
-function createReadiness() {
-  return {
-inputs: {
-  sleep: 7,
-  stress: 4,
-  soreness: 3,
-  motivation: 7,
-  hrvDelta: '',
-  restingHrDelta: '',
-},
-score: 72,
-band: 'moderate',
-updatedAt: null,
-  };
-}
-
-function createAthleteModel() {
-  return {
-domainScores: {
-  strength: 50,
-  calisthenics: 50,
-  striking: 50,
-  grappling: 50,
-  conditioning: 50,
-  mobility: 50,
-},
-controlScore: 50,
-fatigueDebt: 0,
-consistencyScore: 0,
-adaptationConfidence: 0.1,
-readinessTrend: [],
-performanceTrend: [],
-  };
-}
-
-function createProgression() {
-  return {
-exercises: {},
-skills: {},
-martialArts: {
-  currentPhase: 'technical',
-  readinessScore: 50,
-  recentPhaseHistory: [],
-  completedByPhase: {
-    technical: 0,
-    conditioning: 0,
-    sparring: 0,
-  },
-},
-stalledItems: [],
-highRPEStreak: 0,
-deloadRecommended: false,
-lastAdaptationSummary: 'No adaptation yet',
-  };
-}
-
-function createConstraints() {
-  return {
-injuries: {
-  shoulder: false,
-  back: false,
-  knee: false,
-},
-unavailableEquipment: [],
-blockedPatterns: [],
-timeOverrideMinutes: null,
-  };
-}
-
-function createMuscleRecovery() {
-  const MUSCLE_RECOVERY_HOURS = {
-quads: 72, hamstrings: 72, glutes: 72, chest: 48, back: 72,
-shoulders: 48, arms: 48, core: 24, lowerBack: 72, hipFlexors: 48,
-calves: 48, fullBody: 72,
-  };
-  return Object.fromEntries(
-Object.entries(MUSCLE_RECOVERY_HOURS).map(([muscle, hours]) => [
-  muscle,
-  { lastTrained: null, recoveryHours: hours, status: 'fresh' }
-])
-  );
-}
-
-function getMuscleStatus(muscleEntry) {
-  if (!muscleEntry.lastTrained) return 'fresh';
-  const hoursSince = (Date.now() - new Date(muscleEntry.lastTrained).getTime()) / 3600000;
-  const pct = hoursSince / muscleEntry.recoveryHours;
-  if (pct >= 1) return 'fresh';
-  if (pct >= 0.5) return 'recovering';
-  return 'fatigued';
-}
-
-function updateMuscleRecovery(muscleRecovery, exercises) {
-  const updated = { ...muscleRecovery };
-  const now = new Date().toISOString();
-  for (const ex of exercises || []) {
-for (const muscle of ex.muscles || []) {
-  if (muscle === 'fullBody') {
-    // update all muscles
-    for (const key of Object.keys(updated)) {
-      updated[key] = { ...updated[key], lastTrained: now };
-    }
-  } else if (updated[muscle]) {
-    updated[muscle] = { ...updated[muscle], lastTrained: now };
-  }
-}
-  }
-  // recompute status
-  return Object.fromEntries(
-Object.entries(updated).map(([k, v]) => [k, { ...v, status: getMuscleStatus(v) }])
-  );
-}
-
-function getMuscleRecoveryAdvice(muscleRecovery) {
-  const entries = Object.entries(muscleRecovery || {});
-  const fatigued = entries.filter(([, v]) => v.status === 'fatigued').map(([k]) => k);
-  const recovering = entries.filter(([, v]) => v.status === 'recovering').map(([k]) => k);
-  const total = entries.length || 1;
-  const score = Math.round(((total - fatigued.length - recovering.length * 0.5) / total) * 100);
-  return { fatiguedMuscles: fatigued, recoveringMuscles: recovering, recoveryScore: clamp(score, 0, 100) };
-}
-
-const GEMINI_ALLOWED_MODELS = ['gemini-3-flash-preview', 'gemini-2.5-flash', 'gemini-flash-latest'];
-const GEMINI_DEFAULT_MODEL = 'gemini-3-flash-preview';
-const GEMINI_RETRY_DELAYS_MS = [1500, 3000, 6000];
-const WEEKLY_SUMMARY_COOLDOWN_MS = 12 * 60 * 60 * 1000;
-const AI_PLAN_REQUEST_TIMEOUT_MS = 25000;
-const AI_PLAN_COOLDOWN_MS = 15 * 60 * 1000;
-const AI_PLAN_RETRY_DELAYS_MS = [1000];
-const AI_PLAN_MAX_RETRY_AFTER_MS = 15000;
-const AI_PLAN_FRESHNESS_HOURS = 16;
-const AI_PLANNER_ALLOWED_TYPES = new Set(SESSION_TYPES);
-const AI_PRIMARY_PLAN_SOURCES = new Set(['ai', 'ai_guardrail_corrected']);
-
-function normalizeGeminiModel(model) {
-  return GEMINI_ALLOWED_MODELS.includes(model) ? model : GEMINI_DEFAULT_MODEL;
-}
-
-function buildGeminiEndpoint(model) {
-  const normalizedModel = normalizeGeminiModel(model);
-  return `https://generativelanguage.googleapis.com/v1beta/models/${normalizedModel}:generateContent`;
-}
-
-function sleepMs(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-function parseRetryAfterSeconds(value) {
-  if (!value) return null;
-  const seconds = Number(value);
-  if (Number.isFinite(seconds) && seconds >= 0) return Math.round(seconds);
-  const ts = Date.parse(value);
-  if (!Number.isFinite(ts)) return null;
-  const delta = Math.ceil((ts - Date.now()) / 1000);
-  return delta > 0 ? delta : null;
-}
-
-function parseGeminiError(res, payload, requestType = 'Gemini request') {
-  const status = res?.status || 0;
-  const retryAfterSeconds = parseRetryAfterSeconds(res?.headers?.get('retry-after'));
-  const payloadMsg = typeof payload === 'string'
-? payload
-: (payload?.error?.message || payload?.message || '');
-  const apiCode = payload?.error?.status || payload?.error?.code || null;
-
-  let message = `${requestType} failed (${status || 'network'}).`;
-  if (status === 429) {
-message = retryAfterSeconds
-  ? `Rate limit hit (429). Retry in ~${retryAfterSeconds}s.`
-  : 'Rate limit hit (429). Please wait a bit and retry.';
-  } else if (status === 503) {
-message = 'Gemini service is temporarily unavailable (503). Retrying may help.';
-  } else if (status === 403) {
-message = 'Gemini access denied (403). Check API key permissions and billing/quota.';
-  } else if (status === 400) {
-message = 'Gemini rejected the request (400).';
-  }
-  if (payloadMsg) message = `${message} ${payloadMsg}`.trim();
-
-  const err = new Error(message);
-  err.status = status;
-  err.code = apiCode;
-  err.retryAfterSeconds = retryAfterSeconds;
-  err.payload = payload;
-  return err;
-}
-
-function createGeminiParseError(requestType = 'response', rawText = '', failureType = 'invalid_json', source = 'primary') {
-  const baseMessage = failureType === 'blocked_or_empty'
-? `Gemini ${requestType} parse error: empty or blocked payload.`
-: `Gemini ${requestType} parse error: invalid JSON payload.`;
-  const err = new Error(baseMessage);
-  err.name = 'GeminiParseError';
-  err.isGeminiParseError = true;
-  err.failureType = failureType;
-  err.source = source;
-  err.rawTextSnippet = String(rawText || '').replace(/\s+/g, ' ').slice(0, 200);
-  return err;
-}
-
-function fallbackModelForParse(selectedModel) {
-  const normalized = normalizeGeminiModel(selectedModel);
-  const ordered = [normalized, ...GEMINI_ALLOWED_MODELS.filter(model => model !== normalized)];
-  return ordered.find(model => model !== normalized) || null;
-}
-
-function extractGeminiText(payload) {
-  const candidates = Array.isArray(payload?.candidates) ? payload.candidates : [];
-  const textParts = [];
-  for (const candidate of candidates) {
-const parts = Array.isArray(candidate?.content?.parts) ? candidate.content.parts : [];
-for (const part of parts) {
-  if (typeof part?.text === 'string' && part.text.trim()) textParts.push(part.text);
-}
-  }
-  if (textParts.length) return textParts.join('\n');
-  return typeof payload?.text === 'string' ? payload.text : '';
-}
-
-function sanitizeGeminiText(text) {
-  return String(text || '')
-.replace(/```(?:json)?\s*/gi, '')
-.replace(/```/g, '')
-.trim();
-}
-
-function extractFirstJSONObject(text) {
-  let depth = 0;
-  let start = -1;
-  let inString = false;
-  let escaped = false;
-
-  for (let i = 0; i < text.length; i++) {
-const ch = text[i];
-if (inString) {
-  if (escaped) {
-    escaped = false;
-  } else if (ch === '\\') {
-    escaped = true;
-  } else if (ch === '"') {
-    inString = false;
-  }
-  continue;
-}
-
-if (ch === '"') {
-  inString = true;
-  continue;
-}
-if (ch === '{') {
-  if (depth === 0) start = i;
-  depth++;
-  continue;
-}
-if (ch === '}') {
-  if (depth > 0) depth--;
-  if (depth === 0 && start !== -1) return text.slice(start, i + 1);
-}
-  }
-
-  return null;
-}
-
-function parseGeminiJson(text, requestType = 'response') {
-  const clean = sanitizeGeminiText(text);
-  if (!clean) throw createGeminiParseError(requestType, text, 'blocked_or_empty');
-
-  try {
-return JSON.parse(clean);
-  } catch (firstErr) {
-const extracted = extractFirstJSONObject(clean);
-if (extracted) {
-  try {
-    return JSON.parse(extracted);
-  } catch (secondErr) {
-    throw createGeminiParseError(requestType, clean, 'invalid_json');
-  }
-}
-throw createGeminiParseError(requestType, clean, 'invalid_json');
-  }
-}
-
-function buildCoachResponseSchema() {
-  return {
-type: 'object',
-required: ['sessionFocus', 'watchOut', 'exerciseNotes'],
-properties: {
-  sessionFocus: { type: 'string' },
-  watchOut: { type: 'string' },
-  exerciseNotes: {
-    type: 'array',
-    items: {
-      type: 'object',
-      required: ['exerciseName', 'cue', 'why'],
-      properties: {
-        exerciseName: { type: 'string' },
-        cue: { type: 'string' },
-        why: { type: 'string' },
-      },
-    },
-  },
-},
-  };
-}
-
-function normalizeExerciseKey(name) {
-  return String(name || '')
-.toLowerCase()
-.replace(/[^a-z0-9]+/g, ' ')
-.trim()
-.replace(/\s+/g, ' ');
-}
-
-function matchExerciseNameToWorkout(name, workoutNames = []) {
-  const raw = String(name || '').trim();
-  if (!raw) return '';
-  if (!workoutNames.length) return raw;
-
-  const targetKey = normalizeExerciseKey(raw);
-  if (!targetKey) return raw;
-  const keyedWorkout = workoutNames.map(n => ({ name: n, key: normalizeExerciseKey(n) }));
-  const exact = keyedWorkout.find(item => item.key === targetKey);
-  if (exact) return exact.name;
-
-  const partial = keyedWorkout.find(item => item.key.includes(targetKey) || targetKey.includes(item.key));
-  return partial ? partial.name : raw;
-}
-
-function assessCoachCompleteness(notes, workoutNames = []) {
-  const exercises = notes?.exercises && typeof notes.exercises === 'object' ? notes.exercises : {};
-  if (!workoutNames.length) {
-const hasAny = Object.keys(exercises).length > 0;
-return {
-  quality: hasAny ? 'complete' : 'summary_only',
-  missingNames: [],
-  coverageCount: hasAny ? 1 : 0,
-  workoutCount: 0,
+// ─── BLOCK CONFIG ────────────────────────────────────────────────────────────
+const BLOCK_CONFIG = {
+  accumulation:   { label: 'Accumulation',   targetRPE: 7, color: '#3b82f6', desc: 'Build volume & base fitness' },
+  intensification:{ label: 'Intensification', targetRPE: 8, color: '#f97316', desc: 'Push intensity & load' },
+  realization:    { label: 'Realization',    targetRPE: 9, color: '#ef4444', desc: 'Peak performance & test PRs' },
+  deload:         { label: 'Deload',         targetRPE: 5, color: '#22c55e', desc: 'Recovery & adaptation' },
 };
-  }
 
-  const missingNames = workoutNames.filter(name => {
-const note = exercises[name];
-return !note || (!String(note.cue || '').trim() && !String(note.why || '').trim());
-  });
-  const coverageCount = workoutNames.length - missingNames.length;
-  const quality = coverageCount === workoutNames.length
-? 'complete'
-: coverageCount > 0
-  ? 'partial'
-  : 'summary_only';
-  return {
-quality,
-missingNames,
-coverageCount,
-workoutCount: workoutNames.length,
-  };
-}
-
-function validateCoachSchemaAndCoverage(normalized, workoutNames = []) {
-  const notes = normalized?.notes || normalized || {};
-  return assessCoachCompleteness(notes, workoutNames);
-}
-
-function synthesizeExerciseNotes(workout = [], seed = {}) {
-  const merged = { ...(seed || {}) };
-  const presetByPattern = {
-lower: {
-  cue: 'Brace before each rep and drive through full foot pressure.',
-  why: 'Builds lower-body strength safely with consistent mechanics.',
-},
-upper: {
-  cue: 'Set shoulder position first, then press or pull with controlled tempo.',
-  why: 'Improves force transfer while protecting shoulders and elbows.',
-},
-core: {
-  cue: 'Exhale into bracing and keep ribcage stacked over pelvis.',
-  why: 'Reinforces trunk control for every loaded movement today.',
-},
-inversion: {
-  cue: 'Stack wrist-elbow-shoulder and move only within stable balance range.',
-  why: 'Builds skill safely while maintaining joint control.',
-},
-vertical_pull: {
-  cue: 'Start from active scapula, then pull elbows down and back.',
-  why: 'Improves pulling strength with better lat engagement.',
-},
-aerobic: {
-  cue: 'Keep breathing controlled and stay at the planned effort zone.',
-  why: 'Builds conditioning without unnecessary fatigue spikes.',
-},
-  };
-
-  for (const ex of workout || []) {
-const name = String(ex?.name || '').trim();
-if (!name) continue;
-const current = merged[name] || {};
-if (String(current.cue || '').trim() && String(current.why || '').trim()) continue;
-
-const pattern = normalizeExerciseKey(ex?.pattern || '').replace(/\s+/g, '_');
-const preset = presetByPattern[pattern] || null;
-merged[name] = {
-  cue: String(current.cue || '').trim() || preset?.cue || 'Use controlled tempo, full range, and stable bracing each rep.',
-  why: String(current.why || '').trim() || preset?.why || 'Supports high-quality execution while managing fatigue.',
+// ─── DISCIPLINES ─────────────────────────────────────────────────────────────
+const DISCIPLINES = {
+  gym:         { label: 'Gym / Weights', icon: '🏋️', desc: 'Barbell & dumbbell strength training', color: '#f97316' },
+  calisthenics:{ label: 'Calisthenics',  icon: '🤸', desc: 'Bodyweight skill progression',          color: '#22c55e' },
+  running:     { label: 'Running',       icon: '🏃', desc: 'Zone-based cardio & intervals',          color: '#3b82f6' },
+  martial_arts:{ label: 'Martial Arts',  icon: '🥋', desc: 'Striking, grappling & sparring',         color: '#ef4444' },
+  mobility:    { label: 'Mobility',      icon: '🧘', desc: 'Flexibility & movement quality',          color: '#a855f7' },
+  cycling:     { label: 'Cycling',       icon: '🚴', desc: 'Road cycling & HIIT on bike',             color: '#06b6d4' },
+  yoga:        { label: 'Yoga',          icon: '🕉️', desc: 'Breathwork, flow & mindfulness',          color: '#ec4899' },
+  hiit:        { label: 'HIIT',          icon: '⚡', desc: 'High-intensity interval training',         color: '#eab308' },
+  custom:      { label: 'Custom Session',icon: '🧩', desc: 'Build your own session manually',          color: '#94a3b8' },
 };
-  }
 
-  return merged;
-}
-
-function normalizeCoachPayload(payload, workout = []) {
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-throw createGeminiParseError('response', JSON.stringify(payload), 'invalid_json');
-  }
-
-  const workoutNames = (workout || []).map(ex => String(ex?.name || '').trim()).filter(Boolean);
-  const asText = (value, fallback = '') => (typeof value === 'string' ? value.trim() : fallback);
-  const exercises = {};
-
-  if (Array.isArray(payload.exerciseNotes)) {
-for (const note of payload.exerciseNotes) {
-  const exerciseName = matchExerciseNameToWorkout(note?.exerciseName, workoutNames);
-  if (!exerciseName) continue;
-  const cue = asText(note?.cue);
-  const why = asText(note?.why);
-  if (!cue && !why) continue;
-  exercises[exerciseName] = {
-    cue: cue || 'Stay braced and move with control each rep.',
-    why: why || 'Supports cleaner execution for today\'s session.',
-  };
-}
-  }
-
-  if (payload.exercises && typeof payload.exercises === 'object' && !Array.isArray(payload.exercises)) {
-for (const [name, note] of Object.entries(payload.exercises)) {
-  const exerciseName = matchExerciseNameToWorkout(name, workoutNames);
-  if (!exerciseName) continue;
-  const cue = asText(note?.cue);
-  const why = asText(note?.why);
-  if (!cue && !why) continue;
-  exercises[exerciseName] = {
-    cue: cue || 'Stay braced and move with control each rep.',
-    why: why || 'Supports cleaner execution for today\'s session.',
-  };
-}
-  }
-
-  const notes = {
-sessionFocus: asText(payload.sessionFocus, 'Prioritize crisp technique and consistent effort this session.'),
-watchOut: asText(payload.watchOut, 'Scale load or complexity if form degrades or pain appears.'),
-exercises,
-  };
-
-  const coverage = validateCoachSchemaAndCoverage({ notes }, workoutNames);
-  return {
-notes,
-workoutNames,
-...coverage,
-  };
-}
-
-function tryParseCoachPayload(text, workout = [], source = 'primary') {
-  const clean = sanitizeGeminiText(text);
-  if (!clean) throw createGeminiParseError('response', text, 'blocked_or_empty', source);
-  const parsed = parseGeminiJson(clean, 'response');
-  return { ...normalizeCoachPayload(parsed, workout), source };
-}
-
-function chooseBestStructuredCoach(results = []) {
-  const filtered = (results || []).filter(Boolean);
-  if (!filtered.length) return null;
-  const qualityRank = { complete: 3, partial: 2, summary_only: 1 };
-  return filtered
-.slice()
-.sort((a, b) => {
-  const qa = qualityRank[a.quality] || 0;
-  const qb = qualityRank[b.quality] || 0;
-  if (qb !== qa) return qb - qa;
-  return (b.coverageCount || 0) - (a.coverageCount || 0);
-})[0];
-}
-
-function buildCoachRepairBody(rawText, workoutNames = []) {
-  const schema = buildCoachResponseSchema();
-  const workoutList = (workoutNames || []).length
-? workoutNames.map(name => `- ${name}`).join('\n')
-: '- none';
-  const requiredCount = workoutNames.length;
-  const boundedRawText = String(rawText || '').slice(0, 6000);
-
-  const prompt = `Convert the RAW MODEL OUTPUT into strict JSON that matches the schema exactly.
-Rules:
-- Return JSON only. No markdown, no explanations.
-- Use exercise names exactly as provided in WORKOUT EXERCISES.
-- ${requiredCount > 0 ? `Return exactly ${requiredCount} exerciseNotes items, one per workout exercise.` : 'If no workout exercises exist, return an empty exerciseNotes array.'}
-
-WORKOUT EXERCISES:
-${workoutList}
-
-TARGET SCHEMA:
-${JSON.stringify(schema, null, 2)}
-
-RAW MODEL OUTPUT:
-${boundedRawText}`;
-
-  return {
-contents: [{ parts: [{ text: prompt }] }],
-generationConfig: {
-  temperature: 0,
-  maxOutputTokens: 1024,
-  responseMimeType: 'application/json',
-  responseSchema: schema,
-},
-  };
-}
-
-function repairCoachPayload(rawText, workoutNames = []) {
-  return buildCoachRepairBody(rawText, workoutNames);
-}
-
-async function runCoachAttempt({ apiKey, endpoint, body, requestType, workout, source }) {
-  const data = await callGeminiWithRetry({
-apiKey,
-endpoint,
-body,
-requestType,
-  });
-  const text = extractGeminiText(data);
-  try {
-const result = tryParseCoachPayload(text, workout, source);
-return { text, result, parseError: null };
-  } catch (err) {
-if (!err?.isGeminiParseError) throw err;
-err.source = source;
-err.failureType = err.failureType || 'invalid_json';
-return {
-  text,
-  result: null,
-  parseError: err,
+// ─── GOALS ───────────────────────────────────────────────────────────────────
+const GOALS = {
+  fat_loss:   { label: 'Fat Loss',          icon: '🔥', desc: 'Burn fat, preserve muscle' },
+  muscle:     { label: 'Muscle Gain',       icon: '💪', desc: 'Hypertrophy & size' },
+  strength:   { label: 'Strength',          icon: '🏆', desc: 'Get stronger — PRs & 1RMs' },
+  endurance:  { label: 'Endurance',         icon: '🫀', desc: 'Stamina & aerobic base' },
+  sport:      { label: 'Sport Performance', icon: '🥇', desc: 'Specific sport goals' },
+  general:    { label: 'General Fitness',   icon: '✨', desc: 'Look good, feel great, move well' },
 };
-  }
-}
 
-async function callGeminiCoachWithRepair({ apiKey, endpoint, model, primaryBody, workout }) {
-  const workoutNames = (workout || []).map(ex => String(ex?.name || '').trim()).filter(Boolean);
-  const primaryAttempt = await runCoachAttempt({
-apiKey,
-endpoint,
-body: primaryBody,
-requestType: 'Session coaching',
-workout,
-source: 'primary',
-  });
-
-  if (primaryAttempt.result && primaryAttempt.result.quality === 'complete') {
-return {
-  notes: primaryAttempt.result.notes,
-  warning: null,
-  quality: primaryAttempt.result.quality,
-  usedRepair: false,
-  usedModelFallback: false,
-  source: 'primary',
+// ─── FREQUENCY TARGETS (per discipline, per week) ────────────────────────────
+const FREQ_TARGETS = {
+  gym:         4,
+  calisthenics:3,
+  running:     3,
+  martial_arts:3,
+  mobility:    2,
+  cycling:     3,
+  yoga:        2,
+  hiit:        2,
 };
-  }
 
-  const repairBody = repairCoachPayload(primaryAttempt.text, workoutNames);
-  const repairAttempt = await runCoachAttempt({
-apiKey,
-endpoint,
-body: repairBody,
-requestType: 'Session coaching JSON repair',
-workout,
-source: 'repair',
-  });
-
-  if (repairAttempt.result && repairAttempt.result.quality === 'complete') {
-return {
-  notes: repairAttempt.result.notes,
-  warning: null,
-  quality: repairAttempt.result.quality,
-  usedRepair: true,
-  usedModelFallback: false,
-  source: 'repair',
+const LEGACY_TYPE_MAP = {
+  gym: 'gym',
+  calisthenics: 'calisthenics',
+  running: 'running',
+  mobility: 'mobility',
+  cycling: 'cycling',
+  yoga: 'yoga',
+  hiit: 'hiit',
+  martialarts: 'martial_arts',
+  martial_arts: 'martial_arts',
+  'martial arts': 'martial_arts',
 };
-  }
 
-  const structuredResults = [primaryAttempt.result, repairAttempt.result].filter(Boolean);
-  const parseFailures = [primaryAttempt.parseError, repairAttempt.parseError].filter(Boolean);
-  let bestStructured = chooseBestStructuredCoach(structuredResults);
-  let usedModelFallback = false;
-
-  const fallbackModel = fallbackModelForParse(model);
-  const shouldTryFallbackModel = !bestStructured && parseFailures.length > 0 && !!fallbackModel;
-  if (shouldTryFallbackModel) {
-const fallbackAttempt = await runCoachAttempt({
-  apiKey,
-  endpoint: buildGeminiEndpoint(fallbackModel),
-  body: primaryBody,
-  requestType: `Session coaching (${fallbackModel})`,
-  workout,
-  source: 'model_fallback',
-});
-usedModelFallback = true;
-if (fallbackAttempt.result) {
-  bestStructured = fallbackAttempt.result;
-} else if (fallbackAttempt.parseError) {
-  parseFailures.push(fallbackAttempt.parseError);
-}
-  }
-
-  if (!bestStructured) {
-throw parseFailures[parseFailures.length - 1] || createGeminiParseError('response', primaryAttempt.text, 'invalid_json', 'primary');
-  }
-
-  if (bestStructured.quality === 'complete') {
-return {
-  notes: bestStructured.notes,
-  warning: null,
-  quality: 'complete',
-  usedRepair: !!repairAttempt.result,
-  usedModelFallback,
-  source: bestStructured.source || (usedModelFallback ? 'model_fallback' : 'primary'),
+const INJURY_MUSCLE_MAP = {
+  shoulder: ['shoulders', 'arms', 'chest'],
+  back: ['back', 'lowerBack'],
+  knee: ['quads', 'hamstrings', 'glutes', 'calves'],
+  ankle: ['calves', 'hipFlexors'],
+  wrist: ['arms', 'shoulders', 'chest'],
 };
-  }
 
-  const filledExercises = synthesizeExerciseNotes(workout, bestStructured.notes.exercises);
-  const filledNotes = { ...bestStructured.notes, exercises: filledExercises };
-  const completeness = validateCoachSchemaAndCoverage({ notes: filledNotes }, bestStructured.workoutNames || workoutNames);
-  const warning = bestStructured.quality === 'summary_only'
-? 'AI returned summary-only coaching; exercise-specific cues were safely filled.'
-: 'AI returned partial exercise notes; missing cues were safely filled.';
-
-  return {
-notes: filledNotes,
-warning,
-quality: completeness.quality || 'partial',
-usedRepair: !!repairAttempt.result,
-usedModelFallback,
-source: 'synthetic_fill',
-  };
-}
-
-async function callGeminiCoachReliable(params) {
-  return callGeminiCoachWithRepair(params);
-}
-
-function buildExerciseQABody(question, userContext = {}, workout = []) {
-  const workoutList = (workout || []).length
-? workout.map((ex, idx) => `${idx + 1}. ${ex.name}`).join('\n')
-: 'No active workout selected.';
-  const prompt = `You are a strict but supportive combat-athlete coach.
-Answer the user's exercise question in concise, actionable steps.
-If the user asks about skipping, reinforce accountability and provide the smallest next action to stay on plan.
-Keep answers practical and safe (avoid medical diagnosis).
-
-ATHLETE CONTEXT:
-- Session Type: ${userContext.sessionType || 'unknown'}
-- Martial Arts Next Phase: ${userContext.martialPhase || 'technical'}
-- Readiness: ${userContext.readinessScore || '?'} (${userContext.readinessBand || 'unknown'})
-- Skip Debt Score: ${userContext.skipDebtScore ?? 0}
-- Time Available: ${userContext.timeAvailable || '?'} min
-
-CURRENT WORKOUT:
-${workoutList}
-
-USER QUESTION:
-${String(question || '').slice(0, 1000)}
-
-Respond as plain text with:
-1) Direct answer
-2) What to do now (next 1-2 actions)
-3) One safety/technique watchout`;
-
-  return {
-contents: [{ parts: [{ text: prompt }] }],
-generationConfig: {
-  temperature: 0.2,
-  maxOutputTokens: 512,
-},
-  };
-}
-
-async function callGeminiExerciseQA(apiKey, endpoint, question, userContext = {}, workout = []) {
-  const trimmedQuestion = String(question || '').trim();
-  if (!trimmedQuestion) throw new Error('Enter a question for AI coach.');
-  const body = buildExerciseQABody(trimmedQuestion, userContext, workout);
-  const data = await callGeminiWithRetry({
-apiKey,
-endpoint,
-body,
-requestType: 'Exercise Q&A',
-  });
-  const text = sanitizeGeminiText(extractGeminiText(data));
-  if (!text) throw new Error('Gemini returned an empty answer. Please retry.');
-  return text;
-}
-
-function buildFallbackCoachingNotes(workout, userContext = {}) {
-  const typeLabel = userContext.sessionType
-? String(userContext.sessionType).replace(/([A-Z])/g, ' $1').toLowerCase()
-: 'training';
-  const exercises = {};
-  for (const ex of workout || []) {
-const name = ex?.name || 'Exercise';
-exercises[name] = {
-  cue: 'Use controlled tempo, full range of motion, and stable bracing each rep.',
-  why: 'Maintains quality and lowers risk while progressing this session.',
+// ─── COACH PERSONAS ──────────────────────────────────────────────────────────
+const COACH_PERSONAS = {
+  coach:          { label: 'Supportive Coach',   desc: 'Encouraging, balanced, data-informed' },
+  drill_sergeant: { label: 'Drill Sergeant',     desc: 'Intense, no excuses, push harder' },
+  data_nerd:      { label: 'Data Nerd',          desc: 'Metrics-obsessed, evidence-based, analytical' },
+  silent:         { label: 'Silent Mode',        desc: 'Minimal commentary, just the plan' },
 };
-  }
-  return {
-sessionFocus: `Prioritize crisp technique and complete the planned work for this ${typeLabel} session.`,
-watchOut: userContext.skipDebtScore > 0
-  ? 'No skip today. Scale intelligently if needed, but complete the session.'
-  : 'Scale load or complexity if form degrades or pain appears.',
-exercises,
-  };
-}
 
-async function callGeminiWithRetry({
-  apiKey,
-  endpoint,
-  body,
-  requestType = 'Gemini request',
-  timeoutMs = null,
-  retryDelaysMs = GEMINI_RETRY_DELAYS_MS,
-  maxRetryAfterMs = Number.POSITIVE_INFINITY,
-}) {
-  if (!apiKey) throw new Error('Gemini API key missing.');
-  const delays = Array.isArray(retryDelaysMs) && retryDelaysMs.length
-? retryDelaysMs.map(ms => Math.max(0, toNum(ms, 0)))
-: GEMINI_RETRY_DELAYS_MS;
-  const maxRetryIndex = delays.length;
-  const hasTimeout = Number.isFinite(timeoutMs) && timeoutMs > 0;
-  const boundedMaxRetryAfterMs = Number.isFinite(maxRetryAfterMs) && maxRetryAfterMs >= 0
-? maxRetryAfterMs
-: Number.POSITIVE_INFINITY;
-
-  for (let attempt = 0; attempt <= maxRetryIndex; attempt++) {
-try {
-  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
-  const timeoutId = hasTimeout && controller
-    ? setTimeout(() => controller.abort(), timeoutMs)
-    : null;
-  let res;
-  try {
-    res = await fetch(`${endpoint}?key=${apiKey}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: controller?.signal,
-    });
-  } finally {
-    if (timeoutId) clearTimeout(timeoutId);
-  }
-
-  if (res.ok) return await res.json();
-
-  let payload = null;
-  try {
-    payload = await res.json();
-  } catch (jsonErr) {
-    try {
-      payload = await res.text();
-    } catch (textErr) {
-      payload = null;
-    }
-  }
-
-  const err = parseGeminiError(res, payload, requestType);
-  const isTransient = res.status === 429 || res.status === 503;
-  if (!isTransient || attempt === maxRetryIndex) throw err;
-
-  const jitter = Math.floor(Math.random() * 501);
-  const retryAfterMsRaw = err.retryAfterSeconds ? err.retryAfterSeconds * 1000 : 0;
-  const retryAfterMs = Math.min(retryAfterMsRaw, boundedMaxRetryAfterMs);
-  const baseDelayMs = delays[attempt] ?? delays[delays.length - 1] ?? 0;
-  const waitMs = Math.max(baseDelayMs + jitter, retryAfterMs);
-  await sleepMs(waitMs);
-} catch (error) {
-  const isAbort = error?.name === 'AbortError';
-  const transformedError = isAbort
-    ? Object.assign(new Error(`${requestType} timed out${hasTimeout ? ` after ${Math.round(timeoutMs)}ms` : ''}.`), {
-        status: 0,
-        code: 'TIMEOUT',
-        failureType: 'timeout',
-        isTimeout: true,
-      })
-    : error;
-  const isNetwork = transformedError instanceof TypeError || transformedError?.name === 'TypeError';
-  if (!(isNetwork || isAbort) || attempt === maxRetryIndex) throw transformedError;
-  const jitter = Math.floor(Math.random() * 501);
-  const baseDelayMs = delays[attempt] ?? delays[delays.length - 1] ?? 0;
-  await sleepMs(baseDelayMs + jitter);
-}
-  }
-
-  throw new Error(`${requestType} failed after retries.`);
-}
-
-function createAIConfig() {
-  return {
-enabled: false,
-planningEnabled: true,
-apiKey: '',
-model: GEMINI_DEFAULT_MODEL,
-planningModel: GEMINI_DEFAULT_MODEL,
-endpoint: buildGeminiEndpoint(GEMINI_DEFAULT_MODEL),
-planningLastQuality: null,
-coachingNotes: null,
-coachingLoading: false,
-coachingError: null,
-coachingWarning: null,
-lastCoachQuality: null,
-lastCoachSource: null,
-qaLoading: false,
-qaError: null,
-qaAnswer: '',
-qaQuestion: '',
-  };
-}
-
-function createPlanState() {
-  return {
-generatedAt: null,
-primaryRecommendation: null,
-secondaryRecommendation: null,
-reasonText: 'Complete readiness check to get today\'s recommendation.',
-weeklyFocus: 'Build balanced exposure across all domains.',
-watchout: 'No current watchout',
-upcoming: [],
-acknowledgedPrompts: {},
-progressionPrompts: [],
-weeklySummary: null,
-weeklySummaryGeneratedAt: null,
-weeklySummaryLoading: false,
-weeklySummaryCooldownUntil: null,
-weeklySummaryLastAttemptAt: null,
-weeklySummaryLastError: null,
-exerciseHistoryIndex: {},
-lastGeneratedAtByType: {},
-scheduledSlotsByDate: {},
-skipDebtScore: 0,
-consecutiveSkippedSlots: 0,
-lastScheduleReplanAt: null,
-aiPlan: null,
-aiPlanStatus: 'idle',
-aiInterview: null,
-aiPlanLastError: null,
-aiPlanSource: 'fallback_engine',
-aiPlanCooldownUntil: null,
-aiPlanLastAttemptAt: null,
-aiPlanLastFailureCode: null,
-aiPlanLastFailureType: null,
-aiPlanNeedsRefresh: true,
-martialArtsNextPhase: 'technical',
-martialArtsNextRationale: 'Rebuild technical consistency first.',
-  };
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// EXERCISE DATABASE
-// ─────────────────────────────────────────────────────────────────────────────
-
+// ─── EXERCISE DATABASE ───────────────────────────────────────────────────────
 const EXERCISE_DB = {
-  strength: {
-legs: [
-  { name: 'Back Squat',            sets: 5, reps: '5',       rpe: 8, visual: 'squat',     muscles: ['quads','glutes','lowerBack','core'] },
-  { name: 'Deadlift',              sets: 4, reps: '5',       rpe: 8, visual: 'deadlift',  muscles: ['hamstrings','glutes','lowerBack','back'] },
-  { name: 'Front Squat',           sets: 4, reps: '4',       rpe: 8, visual: 'squat',     muscles: ['quads','glutes','core'] },
-  { name: 'Romanian Deadlift',     sets: 4, reps: '8',       rpe: 7, visual: 'deadlift',  muscles: ['hamstrings','glutes','lowerBack'] },
-  { name: 'Bulgarian Split Squat', sets: 3, reps: '8/side',  rpe: 8, visual: 'squat',     muscles: ['quads','glutes','hipFlexors'] },
-  { name: 'Nordic Curl',           sets: 3, reps: '5',       rpe: 8, visual: 'plank',     muscles: ['hamstrings'] },
-  { name: 'Hip Thrust (BB)',        sets: 4, reps: '10',      rpe: 7, visual: 'athletic', muscles: ['glutes','hamstrings'] },
-  { name: 'Walking Lunges (BB)',    sets: 3, reps: '12/side', rpe: 7, visual: 'squat',     muscles: ['quads','glutes','hamstrings'] },
-  { name: 'Box Jumps',             sets: 4, reps: '5',       rpe: 7, visual: 'athletic', muscles: ['quads','glutes','calves'] },
-  { name: 'Leg Press',             sets: 4, reps: '10',      rpe: 7, visual: 'squat',     muscles: ['quads','glutes'] },
-  { name: 'Sled Push',             sets: 6, reps: '20m',     rpe: 8, visual: 'run',       muscles: ['quads','glutes','calves'] },
-],
-upper: [
-  { name: 'Bench Press',           sets: 4, reps: '6',       rpe: 8, visual: 'bench',     muscles: ['chest','shoulders','arms'] },
-  { name: 'Overhead Press',        sets: 4, reps: '6',       rpe: 8, visual: 'ohp',       muscles: ['shoulders','arms','core'] },
-  { name: 'Barbell Row',           sets: 4, reps: '8',       rpe: 7, visual: 'deadlift',  muscles: ['back','arms','core'] },
-  { name: 'Weighted Pull-ups',     sets: 4, reps: '6',       rpe: 8, visual: 'pullup',    muscles: ['back','arms'] },
-  { name: 'Power Clean',           sets: 5, reps: '3',       rpe: 8, visual: 'athletic',  muscles: ['fullBody'] },
-  { name: 'Weighted Dips',         sets: 4, reps: '8',       rpe: 7, visual: 'pushup',    muscles: ['chest','arms','shoulders'] },
-  { name: 'Landmine Press',        sets: 3, reps: '10/side', rpe: 7, visual: 'ohp',       muscles: ['shoulders','chest','core'] },
-  { name: 'Pendlay Row',           sets: 4, reps: '6',       rpe: 8, visual: 'deadlift',  muscles: ['back','arms'] },
-  { name: 'Farmer Carries',        sets: 4, reps: '40m',     rpe: 7, visual: 'athletic',  muscles: ['fullBody','core'] },
-  { name: 'Turkish Get-up',        sets: 3, reps: '3/side',  rpe: 7, visual: 'ohp',       muscles: ['fullBody','shoulders','core'] },
-],
-full: [
-  { name: 'Power Clean + Jerk',    sets: 5, reps: '3',  rpe: 9, visual: 'ohp',       muscles: ['fullBody'] },
-  { name: 'Trap Bar Deadlift',     sets: 4, reps: '5',  rpe: 8, visual: 'deadlift',  muscles: ['quads','hamstrings','glutes','back'] },
-  { name: 'KB Swings',             sets: 5, reps: '15', rpe: 7, visual: 'athletic',  muscles: ['glutes','hamstrings','back','core'] },
-  { name: 'Medball Slams',         sets: 4, reps: '10', rpe: 7, visual: 'athletic',  muscles: ['fullBody','core'] },
-  { name: 'Battle Ropes',          sets: 5, reps: '30s',rpe: 8, visual: 'athletic',  muscles: ['arms','shoulders','core'] },
-],
-  },
-
-  calisthenics: {
-pullUp: [
-  { level:1, name:'Dead Hang',              sets:3, reps:'30s',       cue:'Passive hang, scapula packed',           visual:'pullup',   muscles: ['back','arms'] },
-  { level:2, name:'Scapular Pulls',          sets:3, reps:'10',        cue:'Depress and retract scapula only',       visual:'pullup',   muscles: ['back','arms'] },
-  { level:3, name:'Band-Assisted Pull-ups',  sets:3, reps:'8',         cue:'Full ROM, control the descent',          visual:'pullup',   muscles: ['back','arms'] },
-  { level:4, name:'Negative Pull-ups',       sets:4, reps:'5',         cue:'5-second slow descent',                  visual:'pullup',   muscles: ['back','arms'] },
-  { level:5, name:'Pull-ups',                sets:4, reps:'8',         cue:'Chest to bar, elbows down',              visual:'pullup',   muscles: ['back','arms'] },
-  { level:6, name:'Archer Pull-ups',         sets:3, reps:'5/side',    cue:'Lateral lean, far arm nearly straight',  visual:'pullup',   muscles: ['back','arms'] },
-  { level:7, name:'Weighted Pull-ups',       sets:4, reps:'5',         cue:'Add 10kg+, control tempo',               visual:'pullup',   muscles: ['back','arms'] },
-  { level:8, name:'L-Pull-ups',              sets:3, reps:'5',         cue:'Legs parallel to floor throughout',      visual:'plank',    muscles: ['back','arms'] },
-  { level:9, name:'Muscle-up',               sets:3, reps:'3',         cue:'Explosive pull, fast transition',         visual:'pullup',   muscles: ['back','arms'] },
-],
-pushUp: [
-  { level:1, name:'Incline Push-ups',          sets:3, reps:'15',     cue:'Hands elevated, full ROM',               visual:'pushup',  muscles: ['chest','arms','shoulders'] },
-  { level:2, name:'Standard Push-ups',         sets:4, reps:'20',     cue:'Rigid plank, elbows 45°',                visual:'pushup',  muscles: ['chest','arms','shoulders'] },
-  { level:3, name:'Diamond Push-ups',          sets:3, reps:'15',     cue:'Hands together, tricep focus',           visual:'pushup',  muscles: ['chest','arms','shoulders'] },
-  { level:4, name:'Pike Push-ups',             sets:3, reps:'12',     cue:'Hips high, head toward floor',           visual:'ohp',     muscles: ['chest','arms','shoulders'] },
-  { level:5, name:'Decline Push-ups',          sets:3, reps:'15',     cue:'Feet elevated, upper chest',             visual:'pushup',  muscles: ['chest','arms','shoulders'] },
-  { level:6, name:'Archer Push-ups',           sets:3, reps:'8/side', cue:'One arm loaded, other straight',         visual:'pushup',  muscles: ['chest','arms','shoulders'] },
-  { level:7, name:'Pseudo-Planche Push-ups',   sets:3, reps:'8',      cue:'Hands by hips, lean forward',            visual:'pushup',  muscles: ['chest','arms','shoulders'] },
-],
-squat: [
-  { level:1, name:'Assisted Pistol Squat', sets:3, reps:'8/side', cue:'Hold support, full depth',      visual:'squat',  muscles: ['quads','glutes'] },
-  { level:2, name:'Box Pistol Squat',      sets:3, reps:'6/side', cue:'Touch box at bottom',           visual:'squat',  muscles: ['quads','glutes'] },
-  { level:3, name:'Pistol Squat',          sets:4, reps:'6/side', cue:'Heel flat, balance point',      visual:'squat',  muscles: ['quads','glutes'] },
-  { level:4, name:'Shrimp Squat',          sets:3, reps:'6/side', cue:'Back foot held, knee to floor', visual:'squat',  muscles: ['quads','glutes'] },
-  { level:5, name:'Weighted Pistol Squat', sets:4, reps:'5/side', cue:'Hold weight for progressive load', visual:'squat',  muscles: ['quads','glutes'] },
-],
-core: [
-  { level:1, name:'Plank',            sets:3, reps:'45s', cue:'Neutral spine, squeeze glutes',     visual:'plank',    muscles: ['core'] },
-  { level:2, name:'Hollow Body Hold', sets:3, reps:'30s', cue:'Lower back pressed to floor',       visual:'plank',    muscles: ['core'] },
-  { level:3, name:'Tuck L-Sit',       sets:4, reps:'15s', cue:'Knees to chest, arms locked',       visual:'plank',    muscles: ['core'] },
-  { level:4, name:'Ab Wheel Rollout', sets:3, reps:'10',  cue:'Hips down, full extension',         visual:'plank',    muscles: ['core'] },
-  { level:5, name:'L-Sit (Floor)',    sets:4, reps:'20s', cue:'Legs straight, hips off floor',     visual:'plank',    muscles: ['core'] },
-  { level:6, name:'Dragon Flag',      sets:3, reps:'5',   cue:'Slow descent, stay rigid',           visual:'plank',    muscles: ['core'] },
-],
-handstand: [
-  { level:1, name:'Wall Kick-up',          sets:5, reps:'30s',        cue:'Chest to wall, kick up controlled',   visual:'handstand',  muscles: ['shoulders','arms','core'] },
-  { level:2, name:'Wall Handstand Hold',   sets:5, reps:'45s',        cue:'Straight body, push floor away',      visual:'handstand',  muscles: ['shoulders','arms','core'] },
-  { level:3, name:'Chest-to-Wall HS',      sets:4, reps:'30s',        cue:'Slightly hollow, finger pressure',    visual:'handstand',  muscles: ['shoulders','arms','core'] },
-  { level:4, name:'Kick to Freestanding',  sets:5, reps:'5 attempts', cue:'Find the balance point slowly',       visual:'handstand',  muscles: ['shoulders','arms','core'] },
-  { level:5, name:'Freestanding HS Hold',  sets:5, reps:'10s',        cue:'Find balance, breathe, adjust',       visual:'handstand',  muscles: ['shoulders','arms','core'] },
-  { level:6, name:'Handstand Walk',        sets:3, reps:'5m',         cue:'Shift weight through fingers',        visual:'handstand',  muscles: ['shoulders','arms','core'] },
-  { level:7, name:'HSPU (Wall)',            sets:4, reps:'5',          cue:'Head to floor, press explosively',    visual:'handstand',  muscles: ['shoulders','arms','core'] },
-],
-  },
-
-  running: [
-{ name:'Easy Run',          distance:'5km',   zone:'Zone 2',   targetRPE:5, desc:'Conversational pace, nasal breathing', visual:'run',  muscles: ['quads','hamstrings','calves'] },
-{ name:'Long Run',          distance:'10km',  zone:'Zone 2-3', targetRPE:6, desc:'Steady aerobic base build',            visual:'run',  muscles: ['quads','hamstrings','calves'] },
-{ name:'Tempo Run',         distance:'5km',   zone:'Zone 4',   targetRPE:7, desc:'Comfortably hard, lactate threshold',  visual:'run',  muscles: ['quads','hamstrings','calves'] },
-{ name:'400m Intervals',    distance:'8×400m',zone:'Zone 5',   targetRPE:9, desc:'90s rest between reps',               visual:'run',  muscles: ['quads','hamstrings','calves'] },
-{ name:'800m Intervals',    distance:'5×800m',zone:'Zone 4-5', targetRPE:8, desc:'2min rest between reps',              visual:'run',  muscles: ['quads','hamstrings','calves'] },
-{ name:'Fartlek',           distance:'6km',   zone:'Mixed',    targetRPE:7, desc:'30s surge / 60s easy, unstructured',  visual:'run',  muscles: ['quads','hamstrings','calves'] },
-{ name:'Hill Sprints',      distance:'10×80m',zone:'Zone 5',   targetRPE:9, desc:'Max effort uphill, walk back down',   visual:'run',  muscles: ['quads','hamstrings','calves'] },
-{ name:'Recovery Walk/Run', distance:'4km',   zone:'Zone 1',   targetRPE:3, desc:'Very easy, flush legs',               visual:'run',  muscles: ['quads','hamstrings','calves'] },
-  ],
-
-  striking: [
-{ name:'Shadow Boxing',           duration:'5×3min', focus:'Footwork + Combos',          rpe:6, visual:'strike',  muscles: ['fullBody'] },
-{ name:'Heavy Bag — Power Shots', duration:'5×2min', focus:'Hooks + Cross + Kicks',       rpe:8, visual:'strike',  muscles: ['fullBody'] },
-{ name:'Pad Work (Solo Drill)',    duration:'4×3min', focus:'Combo sequences',             rpe:7, visual:'strike',  muscles: ['fullBody'] },
-{ name:'Teep + Roundkick Drill',  duration:'4×2min', focus:'Range control',               rpe:7, visual:'strike',  muscles: ['fullBody'] },
-{ name:'Defensive Slipping',      duration:'4×2min', focus:'Head movement',               rpe:6, visual:'strike',  muscles: ['fullBody'] },
-{ name:'Clinch Knees (Solo)',      duration:'3×3min', focus:'Clinch entries + knees',      rpe:7, visual:'strike',  muscles: ['fullBody'] },
-{ name:'Combination Drilling',    duration:'5×2min', focus:'6-punch + kick combos',       rpe:7, visual:'strike',  muscles: ['fullBody'] },
-{ name:'Switch Kick Practice',    duration:'3×3min', focus:'Hip rotation + timing',       rpe:7, visual:'strike',  muscles: ['fullBody'] },
-  ],
-
-  grappling: [
-{ name:'Guard Passing Drill',     duration:'4×5min', focus:'Toreando + Over-Under',               rpe:7, visual:'grapple',  muscles: ['fullBody'] },
-{ name:'Takedown Drilling',       duration:'4×3min', focus:'Double leg + Single leg',              rpe:7, visual:'grapple',  muscles: ['fullBody'] },
-{ name:'Submission Chain Drill',  duration:'3×5min', focus:'Armbar → Triangle → Omoplata',         rpe:7, visual:'grapple',  muscles: ['fullBody'] },
-{ name:'Positional Drilling',     duration:'5×3min', focus:'Side control → Mount transitions',     rpe:6, visual:'grapple',  muscles: ['fullBody'] },
-{ name:'Guard Retention',         duration:'4×3min', focus:'Hip escapes + frames',                 rpe:7, visual:'grapple',  muscles: ['fullBody'] },
-{ name:'Wrestling Flow',          duration:'4×3min', focus:'Level changes + sprawl',               rpe:7, visual:'grapple',  muscles: ['fullBody'] },
-{ name:'Leg Lock Entry Drill',    duration:'3×5min', focus:'Heel hook + Knee bar entries',         rpe:7, visual:'grapple',  muscles: ['fullBody'] },
-{ name:'Turtle + Back Take',      duration:'3×4min', focus:'Gut wrench + back body triangle',      rpe:7, visual:'grapple',  muscles: ['fullBody'] },
-  ],
-
-  mobility: [
-{ name:'Hip Flexor + Quad Flow', duration:'15min', focus:'Couch stretch, 90/90, pigeon',                      visual:'mobility',  muscles: ['fullBody'] },
-{ name:'Shoulder + Thoracic',    duration:'15min', focus:'Band dislocates, thoracic rotation, chest opener',   visual:'mobility',  muscles: ['fullBody'] },
-{ name:'Full Body Morning Flow', duration:'20min', focus:'Sun salutations + leg swings + spine waves',         visual:'mobility',  muscles: ['fullBody'] },
-{ name:'Splits Progression',     duration:'20min', focus:'Front split + straddle work',                        visual:'mobility',  muscles: ['fullBody'] },
-{ name:'Ankle + Knee Stability', duration:'15min', focus:'ATG split squat, tibialis raises, calf work',        visual:'mobility',  muscles: ['fullBody'] },
-{ name:'Breath + Recovery',      duration:'20min', focus:'Box breathing, progressive relaxation',              visual:'mobility',  muscles: ['fullBody'] },
-{ name:'Loaded Stretching',      duration:'20min', focus:'Jefferson curl, pancake drill, RDL stretch',         visual:'mobility',  muscles: ['fullBody'] },
-  ],
-};
-
-const EXERCISE_EXPANSION_TARGETS = {
-  strength: { legs: 24, upper: 24, full: 14 },
-  calisthenics: { pullUp: 15, pushUp: 13, squat: 11, core: 12, handstand: 13 },
-  running: 14,
-  striking: 16,
-  grappling: 16,
-  mobility: 15,
-};
-
-const DOMAIN_VARIANT_PROFILES = {
-  strength: [
-{ label: 'Tempo Focus', mode: 'suffix', rpeAdjust: -1, difficultyTier: 'advanced', note: '3-1-1 tempo emphasis.' },
-{ label: 'Paused Reps', mode: 'suffix', rpeAdjust: -1, difficultyTier: 'advanced', note: '1-second pause in hardest position.' },
-{ label: 'Volume Wave', mode: 'suffix', rpeAdjust: -1, setAdjust: 1, note: 'Volume-biased wave for technical volume.' },
-{ label: 'Power Intent', mode: 'suffix', rpeAdjust: 0, note: 'Move explosively while keeping clean mechanics.' },
-{ label: 'Control Set', mode: 'suffix', rpeAdjust: -1, note: 'Deliberate eccentric and controlled concentric.' },
-  ],
-  calisthenics: [
-{ label: 'Technique Density', mode: 'suffix', rpeAdjust: 0, note: 'Short rests and strict form consistency.' },
-{ label: 'Eccentric Control', mode: 'suffix', rpeAdjust: -1, note: 'Slow lowering emphasis each rep.' },
-{ label: 'Pause Holds', mode: 'suffix', rpeAdjust: -1, note: 'Pause at weakest range for control.' },
-{ label: 'Volume Ladder', mode: 'suffix', rpeAdjust: 0, setAdjust: 1, note: 'Ladder-style accumulation.' },
-  ],
-  running: [
-{ label: 'Negative Split', mode: 'suffix', rpeAdjust: 0, note: 'Finish last third slightly faster.' },
-{ label: 'Cadence Focus', mode: 'suffix', rpeAdjust: -1, note: 'Keep cadence smooth and efficient.' },
-{ label: 'Controlled Start', mode: 'suffix', rpeAdjust: -1, note: 'Start easy and build gradually.' },
-{ label: 'Strong Finish', mode: 'suffix', rpeAdjust: 0, note: 'Final segment at controlled push.' },
-  ],
-  striking: [
-{ label: 'Defense Emphasis', mode: 'suffix', rpeAdjust: -1, note: 'Prioritize defensive reactions and resets.' },
-{ label: 'Counter Timing', mode: 'suffix', rpeAdjust: 0, note: 'Counter after first defensive beat.' },
-{ label: 'Footwork Priority', mode: 'suffix', rpeAdjust: -1, note: 'Angle changes before combinations.' },
-{ label: 'Power Cycle', mode: 'suffix', rpeAdjust: 1, note: 'Short bursts of higher power output.' },
-  ],
-  grappling: [
-{ label: 'Pressure Control', mode: 'suffix', rpeAdjust: 0, note: 'Maintain pressure while transitioning.' },
-{ label: 'Chain Flow', mode: 'suffix', rpeAdjust: 0, note: 'Link two to three actions each round.' },
-{ label: 'Positional Retention', mode: 'suffix', rpeAdjust: -1, note: 'Hold dominant position before advancing.' },
-{ label: 'Scramble Responses', mode: 'suffix', rpeAdjust: 1, note: 'Short scramble exchanges with control.' },
-  ],
-  mobility: [
-{ label: 'Breath-Led', mode: 'suffix', rpeAdjust: -1, note: 'Slow breath-led transitions.' },
-{ label: 'Posture Reset', mode: 'suffix', rpeAdjust: -1, note: 'Posture and alignment emphasis.' },
-{ label: 'Range Build', mode: 'suffix', rpeAdjust: 0, note: 'Progressively increase ROM each set.' },
-{ label: 'Tension Release', mode: 'suffix', rpeAdjust: -1, note: 'Lower tone and ease joint stiffness.' },
-  ],
-};
-
-function applyVariantDescriptor(base, descriptor, domain) {
-  const baseName = String(base.name || '').trim();
-  const variantName = descriptor.mode === 'prefix'
-? `${descriptor.label} ${baseName}`
-: `${baseName} — ${descriptor.label}`;
-  const variantGroup = base.variantGroup || slugify(baseName);
-  const nextSets = base.sets ? clamp(toNum(base.sets, 0) + toNum(descriptor.setAdjust, 0), 1, 10) : base.sets;
-  const nextRPE = base.rpe != null
-? clamp(toNum(base.rpe, 7) + toNum(descriptor.rpeAdjust, 0), 3, 10)
-: (base.targetRPE != null ? clamp(toNum(base.targetRPE, 6) + toNum(descriptor.rpeAdjust, 0), 2, 10) : undefined);
-
-  return {
-...base,
-name: variantName,
-sets: nextSets,
-rpe: base.rpe != null ? nextRPE : base.rpe,
-targetRPE: base.targetRPE != null ? nextRPE : base.targetRPE,
-focus: base.focus ? `${base.focus}. ${descriptor.note}` : base.focus,
-cue: base.cue ? `${base.cue}. ${descriptor.note}` : base.cue,
-desc: base.desc ? `${base.desc}. ${descriptor.note}` : base.desc,
-variantGroup,
-difficultyTier: descriptor.difficultyTier || base.difficultyTier || 'base',
-domain: base.domain || domain,
-  };
-}
-
-function expandListToTarget(list, target, domain) {
-  const baseList = Array.isArray(list) ? list.filter(Boolean) : [];
-  if (baseList.length >= target || baseList.length === 0) return baseList;
-  const variants = DOMAIN_VARIANT_PROFILES[domain] || DOMAIN_VARIANT_PROFILES.strength;
-  const expanded = [...baseList];
-  const seenNames = new Set(baseList.map(item => item.name));
-
-  let cursor = 0;
-  let guard = 0;
-  while (expanded.length < target && guard < 10000) {
-const base = baseList[cursor % baseList.length];
-const descriptor = variants[Math.floor(cursor / baseList.length) % variants.length];
-const candidate = applyVariantDescriptor(base, descriptor, domain);
-if (!seenNames.has(candidate.name)) {
-  expanded.push(candidate);
-  seenNames.add(candidate.name);
-}
-cursor += 1;
-guard += 1;
-  }
-  return expanded;
-}
-
-function expandExerciseCatalogLarge(db) {
-  return {
-...db,
-strength: {
-  legs: expandListToTarget(db.strength.legs, EXERCISE_EXPANSION_TARGETS.strength.legs, 'strength'),
-  upper: expandListToTarget(db.strength.upper, EXERCISE_EXPANSION_TARGETS.strength.upper, 'strength'),
-  full: expandListToTarget(db.strength.full, EXERCISE_EXPANSION_TARGETS.strength.full, 'strength'),
-},
-calisthenics: {
-  pullUp: expandListToTarget(db.calisthenics.pullUp, EXERCISE_EXPANSION_TARGETS.calisthenics.pullUp, 'calisthenics'),
-  pushUp: expandListToTarget(db.calisthenics.pushUp, EXERCISE_EXPANSION_TARGETS.calisthenics.pushUp, 'calisthenics'),
-  squat: expandListToTarget(db.calisthenics.squat, EXERCISE_EXPANSION_TARGETS.calisthenics.squat, 'calisthenics'),
-  core: expandListToTarget(db.calisthenics.core, EXERCISE_EXPANSION_TARGETS.calisthenics.core, 'calisthenics'),
-  handstand: expandListToTarget(db.calisthenics.handstand, EXERCISE_EXPANSION_TARGETS.calisthenics.handstand, 'calisthenics'),
-},
-running: expandListToTarget(db.running, EXERCISE_EXPANSION_TARGETS.running, 'running'),
-striking: expandListToTarget(db.striking, EXERCISE_EXPANSION_TARGETS.striking, 'striking'),
-grappling: expandListToTarget(db.grappling, EXERCISE_EXPANSION_TARGETS.grappling, 'grappling'),
-mobility: expandListToTarget(db.mobility, EXERCISE_EXPANSION_TARGETS.mobility, 'mobility'),
-  };
-}
-
-const MICRO_BREAK_MOBILITY_FLOWS = [
-  {
-id: 'mobility_micro_2_neck_reset',
-name: 'Desk Neck + Breath Reset',
-duration: '2min',
-focus: 'Undo desk posture fast',
-desc: 'Neck relief + shoulder reset + calming breath',
-visual: 'mobility',
-domain: 'mobility',
-pattern: 'mobility',
-progressionType: 'duration',
-muscles: ['fullBody'],
-microFlow: {
-  minutes: 2,
-  steps: [
-    '40s chin tucks + neck glide',
-    '40s wall angels',
-    '40s box breathing',
-  ],
-},
-  },
-  {
-id: 'mobility_micro_2_hip_ankle',
-name: 'Hip + Ankle Wake-Up',
-duration: '2min',
-focus: 'Open hips and ankles before next work block',
-desc: 'Counter sitting stiffness quickly',
-visual: 'mobility',
-domain: 'mobility',
-pattern: 'mobility',
-progressionType: 'duration',
-muscles: ['fullBody'],
-microFlow: {
-  minutes: 2,
-  steps: [
-    '40s standing hip circles',
-    '40s ankle rocks (each side)',
-    '40s nasal breathing march',
-  ],
-},
-  },
-  {
-id: 'mobility_micro_3_tspine',
-name: 'Thoracic Desk Unlock',
-duration: '3min',
-focus: 'Restore upper-back rotation',
-desc: 'Great between long laptop blocks',
-visual: 'mobility',
-domain: 'mobility',
-pattern: 'mobility',
-progressionType: 'duration',
-muscles: ['fullBody'],
-microFlow: {
-  minutes: 3,
-  steps: [
-    '60s thoracic open books',
-    '60s doorway chest opener',
-    '60s deep squat breathing',
-  ],
-},
-  },
-  {
-id: 'mobility_micro_3_spine_reset',
-name: 'Spine Reset Flow',
-duration: '3min',
-focus: 'Flexion-extension balance for back comfort',
-desc: 'Gentle spinal hygiene sequence',
-visual: 'mobility',
-domain: 'mobility',
-pattern: 'mobility',
-progressionType: 'duration',
-muscles: ['fullBody'],
-microFlow: {
-  minutes: 3,
-  steps: [
-    '60s cat-cow',
-    '60s standing forward fold + hang',
-    '60s wall-supported extension',
-  ],
-},
-  },
-  {
-id: 'mobility_micro_5_full_reset',
-name: 'Full Desk Reset',
-duration: '5min',
-focus: 'Posture, hips, shoulders, and downshift',
-desc: 'Balanced full-body cool-off between tasks',
-visual: 'mobility',
-domain: 'mobility',
-pattern: 'mobility',
-progressionType: 'duration',
-muscles: ['fullBody'],
-microFlow: {
-  minutes: 5,
-  steps: [
-    '90s couch stretch (switch sides)',
-    '90s thoracic rotation + reach',
-    '120s box breathing walk',
-  ],
-},
-  },
-  {
-id: 'mobility_micro_5_posterior_chain',
-name: 'Posterior Chain Refresh',
-duration: '5min',
-focus: 'Release hamstrings and lower back tension',
-desc: 'Desk-to-move reset for long seated work',
-visual: 'mobility',
-domain: 'mobility',
-pattern: 'mobility',
-progressionType: 'duration',
-muscles: ['fullBody'],
-microFlow: {
-  minutes: 5,
-  steps: [
-    '90s hamstring hinge pulses',
-    '90s glute bridge hold + reps',
-    '120s crocodile breathing',
-  ],
-},
-  },
-];
-
-function inferProgressionType(ex, domain) {
-  if (domain === 'strength') return 'load';
-  if (domain === 'calisthenics') return 'skillLevel';
-  if (domain === 'running') return 'pace';
-  if (domain === 'mobility') return 'duration';
-  if (domain === 'striking' || domain === 'grappling') return 'density';
-  return ex.duration ? 'duration' : 'reps';
-}
-
-function inferPattern(ex, domain) {
-  const n = (ex.name || '').toLowerCase();
-  if (domain === 'strength' && (n.includes('squat') || n.includes('deadlift') || n.includes('lunge'))) return 'lower';
-  if (domain === 'strength' && (n.includes('press') || n.includes('row') || n.includes('pull'))) return 'upper';
-  if (domain === 'running') return 'aerobic';
-  if (domain === 'mobility') return 'mobility';
-  if (domain === 'calisthenics' && n.includes('handstand')) return 'inversion';
-  if (domain === 'calisthenics' && (n.includes('pull') || n.includes('muscle'))) return 'vertical-pull';
-  if (domain === 'calisthenics') return 'body-control';
-  return domain;
-}
-
-function inferMovementFamily(ex, domain) {
-  const n = (ex.name || '').toLowerCase();
-  if (n.includes('squat') || n.includes('lunge')) return 'squat';
-  if (n.includes('deadlift') || n.includes('hinge') || n.includes('rdl') || n.includes('swing')) return 'hinge';
-  if (n.includes('press') || n.includes('push-up') || n.includes('push up') || n.includes('dip')) return 'horizontal_push';
-  if (n.includes('overhead') || n.includes('handstand') || n.includes('hspu')) return 'vertical_push';
-  if (n.includes('pull') || n.includes('row') || n.includes('muscle-up') || n.includes('muscle up')) return 'vertical_pull';
-  if (n.includes('run') || n.includes('sprint') || n.includes('interval')) return 'locomotion';
-  if (domain === 'striking') return 'striking_skill';
-  if (domain === 'grappling') return 'grappling_skill';
-  if (domain === 'mobility') return 'mobility_flow';
-  if (n.includes('core') || n.includes('plank') || n.includes('sit')) return 'core_stability';
-  return inferPattern(ex, domain) || 'general';
-}
-
-function inferEquipmentTags(ex, domain) {
-  const n = (ex.name || '').toLowerCase();
-  const tags = new Set();
-  if (n.includes('bb') || n.includes('barbell') || n.includes('bench press') || n.includes('deadlift')) tags.add('barbell');
-  if (n.includes('db') || n.includes('dumbbell')) tags.add('dumbbell');
-  if (n.includes('kb') || n.includes('kettlebell')) tags.add('kettlebell');
-  if (n.includes('landmine')) tags.add('landmine');
-  if (n.includes('sled')) tags.add('sled');
-  if (n.includes('rope')) tags.add('battle_ropes');
-  if (n.includes('machine') || n.includes('leg press')) tags.add('machine');
-  if (n.includes('band')) tags.add('band');
-  if (n.includes('pull-up') || n.includes('pull up') || n.includes('muscle-up') || n.includes('muscle up')) tags.add('pullup_bar');
-  if (domain === 'running') tags.add('track_or_road');
-  if (domain === 'striking') tags.add('bag_or_pad');
-  if (domain === 'grappling') tags.add('mat_space');
-  if (domain === 'mobility' || tags.size === 0) tags.add('bodyweight');
-  if (domain === 'strength' && tags.size === 0) tags.add('barbell');
-  return [...tags];
-}
-
-function inferStimulusTags(ex, domain) {
-  const tags = new Set();
-  if (domain === 'strength') tags.add('strength');
-  if (domain === 'calisthenics') tags.add('technique');
-  if (domain === 'running') tags.add('aerobic');
-  if (domain === 'mobility') tags.add('mobility');
-  if (domain === 'striking' || domain === 'grappling') tags.add('skill');
-  const rpe = toNum(ex.rpe ?? ex.targetRPE, 0);
-  if (rpe >= 8) tags.add('power');
-  if (rpe >= 6 && rpe <= 8) tags.add('hypertrophy');
-  if (String(ex.duration || '').includes('min')) tags.add('conditioning');
-  return [...tags];
-}
-
-function inferContraindicationTags(ex, domain) {
-  const pattern = inferPattern(ex, domain);
-  const tags = new Set();
-  if (pattern === 'lower' || pattern === 'aerobic') tags.add('knee');
-  if (pattern === 'upper' || pattern === 'vertical-pull' || pattern === 'inversion') tags.add('shoulder');
-  if (pattern === 'lower' || pattern === 'hinge') tags.add('back');
-  if (domain === 'mobility') tags.clear();
-  return [...tags];
-}
-
-function normalizeTrackLabel(name = '') {
-  return String(name)
-.toLowerCase()
-.replace(/\([^)]*\)/g, ' ')
-.replace(/\b(tempo|pause|paused|volume|wave|control|focus|power|density|eccentric|technique|ladder|negative split|cadence|controlled start|strong finish|defense emphasis|counter timing|footwork priority|pressure control|chain flow|positional retention|scramble responses|breath-led|posture reset|range build|tension release)\b/g, ' ')
-.replace(/[^a-z0-9]+/g, ' ')
-.trim()
-.replace(/\s+/g, ' ');
-}
-
-function inferProgressionTrackId(ex, domain, group) {
-  const variantBase = ex.variantGroup ? normalizeTrackLabel(ex.variantGroup) : normalizeTrackLabel(ex.name || '');
-  const fallback = normalizeTrackLabel(ex.name || '') || slugify(ex.name || 'exercise');
-  const label = variantBase || fallback;
-  return `${domain}_${group}_${slugify(label)}`;
-}
-
-function enrichExercise(item, domain, group, idx) {
-  const id = item.id || `${domain}_${group}_${slugify(item.name)}_${idx + 1}`;
-  return {
-...item,
-id,
-domain: item.domain || domain,
-pattern: item.pattern || inferPattern(item, domain),
-progressionType: item.progressionType || inferProgressionType(item, domain),
-movementFamily: item.movementFamily || inferMovementFamily(item, domain),
-equipmentTags: Array.isArray(item.equipmentTags) ? item.equipmentTags : inferEquipmentTags(item, domain),
-progressionTrackId: item.progressionTrackId || inferProgressionTrackId(item, domain, group),
-stimulusTags: Array.isArray(item.stimulusTags) ? item.stimulusTags : inferStimulusTags(item, domain),
-contraindicationTags: Array.isArray(item.contraindicationTags) ? item.contraindicationTags : inferContraindicationTags(item, domain),
-variantGroup: item.variantGroup || slugify(normalizeTrackLabel(item.name || 'base')),
-prerequisites: Array.isArray(item.prerequisites) ? item.prerequisites : [],
-alternatives: Array.isArray(item.alternatives) ? item.alternatives : [],
-difficultyTier: item.difficultyTier || 'base',
-  };
-}
-
-function enrichExerciseDB(db) {
-  return {
-...db,
-strength: {
-  legs: db.strength.legs.map((ex, i) => enrichExercise(ex, 'strength', 'legs', i)),
-  upper: db.strength.upper.map((ex, i) => enrichExercise(ex, 'strength', 'upper', i)),
-  full: db.strength.full.map((ex, i) => enrichExercise(ex, 'strength', 'full', i)),
-},
-calisthenics: Object.fromEntries(
-  Object.entries(db.calisthenics).map(([skill, arr]) => [skill, arr.map((ex, i) => enrichExercise(ex, 'calisthenics', skill, i))]),
-),
-running: db.running.map((ex, i) => enrichExercise(ex, 'running', 'running', i)),
-striking: db.striking.map((ex, i) => enrichExercise(ex, 'striking', 'striking', i)),
-grappling: db.grappling.map((ex, i) => enrichExercise(ex, 'grappling', 'grappling', i)),
-mobility: db.mobility.map((ex, i) => enrichExercise(ex, 'mobility', 'mobility', i)),
-  };
-}
-
-const EXERCISE_DB_EXPANDED = expandExerciseCatalogLarge(EXERCISE_DB);
-const EXERCISE_DB_V5 = enrichExerciseDB(EXERCISE_DB_EXPANDED);
-
-// ─────────────────────────────────────────────────────────────────────────────
-// INITIAL STATE
-// ─────────────────────────────────────────────────────────────────────────────
-
-function createInitialState() {
-  return {
-view: 'home',
-onboarded: false,
-onboardStep: 0,
-profile: {
-  name: '',
-  age: '',
-  trainingAge: 'intermediate',
-  bodyweight: '',
-  currentBlock: 'accumulation',
-  blockWeek: 1,
-  sessionCount: 0,
-  timeByDay: { mon: 60, tue: 60, wed: 60, thu: 60, fri: 60, sat: 90, sun: 60 },
-  skillAssessments: {
-    maxPullUps: 0,
-    maxPushUps: 0,
-    squatRM: 0,
-    deadliftRM: 0,
-    benchRM: 0,
-    runningPaceEasy: 0,
-    tuckPlancheHold: 0,
-    handstandHold: 0,
-  },
-  primaryGoal: 'complete_athlete',
-  goals: [],
-  primaryGoalType: 'performance',
-  secondaryGoals: [],
-  timelineWeeks: 12,
-  priorityDomains: ['strength', 'conditioning', 'mobility'],
-  goalNotes: '',
-  mustAvoidTags: [],
-},
-programConfig: createProgramConfig(),
-athleteModel: createAthleteModel(),
-progression: createProgression(),
-readiness: createReadiness(),
-planState: createPlanState(),
-constraints: createConstraints(),
-muscleRecovery: createMuscleRecovery(),
-aiConfig: createAIConfig(),
-decisionLog: [],
-domains: {
-  strength:     { level:2, sessions:0, prs:{ squat:0, deadlift:0, bench:0, ohp:0, row:0 }, trend:[] },
-  calisthenics: {
-    level:1, sessions:0, trend:[],
-    skills: {
-      pullUp:    { level:1, maxReps:0, notes:'' },
-      pushUp:    { level:1, maxReps:0, notes:'' },
-      squat:     { level:1, maxReps:0, notes:'' },
-      core:      { level:1, holdTime:0, notes:'' },
-      handstand: { level:1, holdTime:0, notes:'' },
-    },
-  },
-  striking:     { level:1, sessions:0, trend:[] },
-  grappling:    { level:1, sessions:0, trend:[] },
-  mobility:     { level:1, sessions:0, trend:[] },
-  conditioning: { level:1, sessions:0, vo2estimate:35, weeklyKm:0, weeklyKmResetAt:null, trend:[] },
-},
-sessionLogs: [],
-lastSessionTypes: [],
-activeSession: null,
-currentSessionType: null,
-currentMASubtype: null,
-  };
-}
-
-const INITIAL_STATE = createInitialState();
-
-// ─────────────────────────────────────────────────────────────────────────────
-// GEMINI API
-// ─────────────────────────────────────────────────────────────────────────────
-
-async function callGeminiAPI(apiKey, endpoint, model, userContext, workout) {
-  const systemPrompt = `You are an elite personal trainer and combat-sport coach.
-Be strict, direct, and actionable.
-- Never encourage skipping training.
-- If readiness is low, scale intelligently but still prescribe completion.
-- Keep output concise and specific to each exercise.
-- Return strict JSON only.`;
-  const workoutNames = (workout || []).map(ex => String(ex?.name || '').trim()).filter(Boolean);
-  const workoutCount = workoutNames.length;
-  const workoutList = workoutCount > 0 ? workoutNames.map(name => `- ${name}`).join('\n') : '- none';
-  const countRule = workoutCount > 0
-? `- Return exactly ${workoutCount} objects in "exerciseNotes", one per workout exercise.\n- Each "exerciseName" must match one item in WORKOUT EXERCISE NAMES exactly, and each name appears only once.`
-: '- Return an empty "exerciseNotes" array.';
-
-  const contextText = `
-ATHLETE: ${userContext.name}, ${userContext.age}yo, ${userContext.bodyweight}kg, intermediate level
-CURRENT BLOCK: ${userContext.currentBlock} (Target RPE: ${userContext.targetRPE})
-READINESS: ${userContext.readinessScore}/100 (${userContext.readinessBand}) — Sleep: ${userContext.sleep}/10, Stress: ${userContext.stress}/10
-PRIMARY GOAL: ${userContext.primaryGoal}
-SESSION TYPE: ${userContext.sessionType} — ${userContext.timeAvailable} minutes available
-SCHEDULE CONTEXT: ${userContext.scheduledDate || 'manual'} ${userContext.scheduledSlot || ''} (skip debt: ${userContext.skipDebtScore || 0})
-MARTIAL PHASE TARGET: ${userContext.martialPhase || 'technical'}
-MUSCLE RECOVERY: ${userContext.fatiguedMuscles.length > 0 ? 'Fatigued: ' + userContext.fatiguedMuscles.join(', ') : 'All muscles fresh'}
-RECENT SESSIONS (last 3): ${userContext.recentSessions}
-INJURIES: ${userContext.injuries}
-SKILL LEVELS: Pull-up L${userContext.pullUpLevel}, Handstand L${userContext.handstandLevel}, Squat L${userContext.squatLevel}
-
-TODAY'S WORKOUT:
-${workout.map((ex, i) => `${i + 1}. ${ex.name} — ${ex.sets ? ex.sets + '×' + ex.reps : ex.duration || ex.distance || ''}`).join('\n')}
-`;
-
-  const prompt = `${contextText}
-
-WORKOUT EXERCISE NAMES (${workoutCount} total):
-${workoutList}
-
-Respond ONLY with strict JSON (no markdown, no code blocks) in this exact format:
-- Return JSON only, no explanatory text.
-${countRule}
-{
-  "sessionFocus": "2 sentences max: what to focus on and why today",
-  "watchOut": "1 sentence: biggest risk or thing to be careful about today",
-  "exerciseNotes": [
-{
-  "exerciseName": "exact name from TODAY'S WORKOUT",
-  "cue": "1 specific coaching cue for this athlete",
-  "why": "1 sentence: why this exercise today"
-}
-  ]
-}`;
-
-  const coachSchema = buildCoachResponseSchema();
-  const body = {
-contents: [{ parts: [{ text: prompt }] }],
-systemInstruction: { parts: [{ text: systemPrompt }] },
-generationConfig: {
-  temperature: 0.2,
-  maxOutputTokens: 1024,
-  responseMimeType: 'application/json',
-  responseSchema: coachSchema,
-},
-  };
-
-  return callGeminiCoachReliable({ apiKey, endpoint, model, primaryBody: body, workout });
-}
-
-async function callGeminiWeeklySummary(apiKey, endpoint, weekContext) {
-  const prompt = `You are an elite personal trainer reviewing an athlete's training week. Be direct, specific, and actionable.
-
-ATHLETE: ${weekContext.name}, ${weekContext.age}yo, ${weekContext.bodyweight}kg
-WEEK: ${weekContext.weekStart} to ${weekContext.weekEnd}
-PRIMARY GOAL: ${weekContext.primaryGoal}
-CURRENT BLOCK: ${weekContext.currentBlock}
-
-THIS WEEK'S SESSIONS (${weekContext.sessionCount} total):
-${weekContext.sessionSummaries}
-
-ADAPTATION OUTCOMES:
-${weekContext.adaptationSummary}
-
-PROGRESSION NOTES:
-${weekContext.progressionNotes}
-
-AVG READINESS: ${weekContext.avgReadiness}/100
-AVG SESSION RPE: ${weekContext.avgRPE}/10
-
-Respond ONLY with valid JSON (no markdown):
-{
-  "headline": "1 bold sentence summarising the week",
-  "wins": ["up to 3 specific things that went well"],
-  "concerns": ["up to 2 things to watch or address"],
-  "nextWeekFocus": "1-2 sentences on what to prioritise next week",
-  "recommendation": "one specific actionable thing to do differently next week"
-}`;
-
-  const body = {
-contents: [{ parts: [{ text: prompt }] }],
-generationConfig: { temperature: 0.3, maxOutputTokens: 512 },
-  };
-
-  const data = await callGeminiWithRetry({ apiKey, endpoint, body, requestType: 'Weekly summary' });
-  const text = extractGeminiText(data);
-  return parseGeminiJson(text, 'weekly summary');
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// REDUCER
-// ─────────────────────────────────────────────────────────────────────────────
-
-function getReadinessBand(score) {
-  if (score >= 75) return 'high';
-  if (score >= 50) return 'moderate';
-  return 'low';
-}
-
-function calculateReadiness(inputs) {
-  const sleep = clamp(toNum(inputs.sleep, 7), 1, 10);
-  const stress = clamp(toNum(inputs.stress, 4), 1, 10);
-  const soreness = clamp(toNum(inputs.soreness, 3), 1, 10);
-  const motivation = clamp(toNum(inputs.motivation, 7), 1, 10);
-  const subjective = ((sleep * 3) + ((11 - stress) * 2.5) + ((11 - soreness) * 2.0) + (motivation * 2.5)) / 10;
-
-  const hrvDelta = toNum(inputs.hrvDelta, 0);
-  const restingHrDelta = toNum(inputs.restingHrDelta, 0);
-  const wearableAdj = clamp((hrvDelta * 1.5) - (restingHrDelta * 1.2), -12, 12);
-
-  const score = clamp(Math.round(subjective + wearableAdj), 0, 100);
-  return { score, band: getReadinessBand(score) };
-}
-
-function getDomainFromType(type, maSubtype) {
-  if (type === 'martialArts') return maSubtype === 'striking' ? 'striking' : 'grappling';
-  // gym now covers both strength and calisthenics — primary domain is strength
-  return { gym:'strength', calisthenics:'strength', running:'conditioning', mobility:'mobility' }[type] || null;
-}
-
-// Returns all domains affected by a session type (for dual-domain updates)
-function getDomainsFromType(type, maSubtype) {
-  if (type === 'martialArts') return [maSubtype === 'striking' ? 'striking' : 'grappling'];
-  if (type === 'gym') return ['strength', 'calisthenics']; // gym covers both
-  if (type === 'calisthenics') return ['strength', 'calisthenics']; // legacy compat
-  return [getDomainFromType(type, maSubtype)].filter(Boolean);
-}
-
-function getMartialArtsSubtype(sessionLogs) {
-  for (let i = sessionLogs.length - 1; i >= 0; i--) {
-if (sessionLogs[i]?.type !== 'martialArts') continue;
-if (sessionLogs[i]?.maSubtype === 'striking') return 'grappling';
-if (sessionLogs[i]?.maSubtype === 'grappling') return 'striking';
-return 'striking';
-  }
-  return 'striking';
-}
-
-function getWeekStart(date = new Date()) {
-  const weekStart = new Date(date);
-  weekStart.setDate(date.getDate() - date.getDay());
-  weekStart.setHours(0, 0, 0, 0);
-  return weekStart;
-}
-
-function getLocalDateKey(date = new Date()) {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, '0');
-  const d = String(date.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
-}
-
-function isWeekdayDate(date = new Date()) {
-  const day = date.getDay();
-  return day >= 1 && day <= 5;
-}
-
-function getSlotDueDate(dateKey, timeText = '07:30') {
-  const [year, month, day] = String(dateKey || '').split('-').map(Number);
-  const match = String(timeText || '').match(/^(\d{1,2}):([0-5]\d)$/);
-  const hours = match ? clamp(Number(match[1]), 0, 23) : 7;
-  const minutes = match ? Number(match[2]) : 30;
-  return new Date(year || 1970, (month || 1) - 1, day || 1, hours, minutes, 0, 0);
-}
-
-function getSkippedSlotTypeCounts(planState, lookbackDays = 14) {
-  const byType = {};
-  const cutoff = Date.now() - (lookbackDays * 24 * 60 * 60 * 1000);
-  const byDate = planState?.scheduledSlotsByDate || {};
-  for (const daySlots of Object.values(byDate)) {
-for (const slot of ['morning', 'evening']) {
-  const entry = daySlots?.[slot];
-  if (!entry || entry.status !== 'skipped') continue;
-  const atMs = Date.parse(entry.skippedAt || entry.updatedAt || '');
-  if (Number.isFinite(atMs) && atMs < cutoff) continue;
-  const type = entry.type || 'gym';
-  byType[type] = (byType[type] || 0) + 1;
-}
-  }
-  return byType;
-}
-
-function computeNextMartialPhase(state, options = {}) {
-  const martial = state.progression?.martialArts || createProgression().martialArts;
-  const completed = martial.completedByPhase || {};
-  const rawReadiness = toNum(options.baseReadiness, toNum(martial.readinessScore, 50));
-  const skipDebt = toNum(state.planState?.skipDebtScore, 0);
-  const skippedStreak = toNum(state.planState?.consecutiveSkippedSlots, 0);
-  const readinessScore = clamp(rawReadiness - (skipDebt * 4) - (skippedStreak * 6), 0, 100);
-
-  let phaseTarget = 'technical';
-  let rationale = 'Rebuild technical consistency first.';
-
-  if (readinessScore >= 70 && toNum(completed.technical, 0) >= 2 && toNum(completed.conditioning, 0) >= 2 && skippedStreak === 0) {
-phaseTarget = 'sparring';
-rationale = 'Readiness and consistency support live rounds progression.';
-  } else if (readinessScore >= 55 && toNum(completed.technical, 0) >= 2) {
-phaseTarget = 'conditioning';
-rationale = 'Technical base is stable; progress to conditioning rounds.';
-  }
-
-  return { phaseTarget, readinessScore, rationale };
-}
-
-function createScheduledSlot(type, dateKey, slot, timeText, state, ranked) {
-  const martialPhase = computeNextMartialPhase(state);
-  const progressionIntent = type === 'martialArts'
-? { domain: 'martialArts', phaseTarget: martialPhase.phaseTarget }
-: { domain: getDomainFromType(type, null) || type };
-  const dueAt = getSlotDueDate(dateKey, timeText).toISOString();
-  const slotLabel = slot === 'morning' ? 'MORNING' : 'EVENING';
-  return {
-type,
-slot,
-status: 'pending',
-scheduledTime: timeText,
-dueAt,
-source: 'weekday_fixed',
-progressionIntent,
-strictPrompt: `Scheduled ${slotLabel} session. Skips increase accountability debt; complete this slot.`,
-createdAt: new Date().toISOString(),
-priorityHint: ranked.findIndex(item => item.type === type) + 1,
-  };
-}
-
-function applySkipDebtAndReplan(state, ranked) {
-  const now = new Date();
-  const cfg = state.programConfig || {};
-  const scheduleMode = cfg.scheduleMode || 'weekday_fixed';
-  const aiPlanActive = AI_PRIMARY_PLAN_SOURCES.has(state.planState?.aiPlanSource) && !!state.planState?.aiPlan;
-  const existing = state.planState?.scheduledSlotsByDate || {};
-  const scheduledSlotsByDate = { ...existing };
-
-  if (!aiPlanActive && scheduleMode === 'weekday_fixed' && isWeekdayDate(now)) {
-const dateKey = getLocalDateKey(now);
-const dayExisting = scheduledSlotsByDate[dateKey] || {};
-const primaryType = ranked[0]?.type || 'gym';
-const secondaryType = ranked.find(item => item.type !== primaryType)?.type || primaryType;
-scheduledSlotsByDate[dateKey] = {
-  morning: dayExisting.morning || createScheduledSlot(primaryType, dateKey, 'morning', cfg.weekdayMorningTime || '07:30', state, ranked),
-  evening: dayExisting.evening || createScheduledSlot(secondaryType, dateKey, 'evening', cfg.weekdayEveningTime || '19:00', state, ranked),
-};
-  }
-
-  const skipDebtScore = clamp(toNum(state.planState?.skipDebtScore, 0), 0, 30);
-  const consecutiveSkippedSlots = clamp(toNum(state.planState?.consecutiveSkippedSlots, 0), 0, 30);
-  const strictWatchout = skipDebtScore > 0
-? `Accountability active: ${skipDebtScore} skipped slot${skipDebtScore === 1 ? '' : 's'} pending recovery. Complete your next scheduled slot.`
-: null;
-
-  return {
-scheduledSlotsByDate,
-skipDebtScore,
-consecutiveSkippedSlots,
-lastScheduleReplanAt: new Date().toISOString(),
-strictWatchout,
-  };
-}
-
-function isAIPlanningEnabled(state) {
-  return (state.programConfig?.planningMode || 'ai_primary_guardrailed') === 'ai_primary_guardrailed'
-&& !!state.aiConfig?.enabled
-&& !!state.aiConfig?.planningEnabled;
-}
-
-function getPlanSourceDisplayLabel(source) {
-  if (source === 'ai') return 'AI PLAN';
-  if (source === 'ai_guardrail_corrected') return 'AI + GUARDRAIL FIX';
-  return 'FALLBACK PLAN';
-}
-
-function getRollingDateKeys(days = 7, fromDate = new Date()) {
-  const totalDays = clamp(toNum(days, 7), 1, 14);
-  const base = new Date(fromDate);
-  base.setHours(0, 0, 0, 0);
-  const keys = [];
-  for (let i = 0; i < totalDays; i++) {
-const d = new Date(base);
-d.setDate(base.getDate() + i);
-keys.push(getLocalDateKey(d));
-  }
-  return keys;
-}
-
-function createDailyInterviewQuestions(state, dateKey) {
-  const martialNext = computeNextMartialPhase(state);
-  return [
-{
-  id: 'readiness_note',
-  label: 'Readiness',
-  prompt: 'How ready are you to train today (energy, focus, intent)?',
-  placeholder: 'Example: 7/10 ready, solid focus, moderate fatigue.',
-},
-{
-  id: 'soreness_hotspots',
-  label: 'Soreness',
-  prompt: 'Any soreness hotspots or pain flags that should change today\'s plan?',
-  placeholder: 'Example: mild left knee tightness, no pain under load.',
-},
-{
-  id: 'time_constraints',
-  label: 'Constraints',
-  prompt: 'Any schedule limits for today (AM/PM slot restrictions)?',
-  placeholder: 'Example: AM capped at 35 min, PM full session available.',
-},
-{
-  id: 'martial_intent',
-  label: 'Martial Intent',
-  prompt: `For martial work, should we push ${String(martialNext.phaseTarget).toUpperCase()} or rebuild technical quality first?`,
-  placeholder: 'Example: keep technical emphasis today.',
-},
-  ];
-}
-
-function collectRecentManualOverrides(state, lookbackDays = 14, maxItems = 8) {
-  const cutoff = Date.now() - (lookbackDays * 24 * 60 * 60 * 1000);
-  const out = [];
-  for (let i = (state.sessionLogs || []).length - 1; i >= 0; i--) {
-const log = state.sessionLogs[i];
-const doneAt = Date.parse(log?.completedAt || log?.timestamp || '');
-if (!Number.isFinite(doneAt) || doneAt < cutoff) continue;
-const edits = Array.isArray(log?.manualEdits) ? log.manualEdits : [];
-for (const edit of edits) {
-  out.push({
-    at: edit?.at || log?.completedAt || log?.timestamp || '',
-    sessionType: log?.type || 'unknown',
-    from: edit?.oldName || edit?.oldId || 'unknown',
-    to: edit?.newName || edit?.newId || 'unknown',
-  });
-  if (out.length >= maxItems) return out;
-}
-  }
-  return out;
-}
-
-function buildAIPlanningSchema() {
-  return {
-type: 'object',
-required: ['weekStart', 'days'],
-properties: {
-  weekStart: { type: 'string' },
-  weeklyFocus: { type: 'string' },
-  watchout: { type: 'string' },
-  days: {
-    type: 'array',
-    items: {
-      type: 'object',
-      required: ['date', 'morning', 'evening'],
-      properties: {
-        date: { type: 'string' },
-        rationale: { type: 'string' },
-        morning: {
-          type: 'object',
-          required: ['type', 'rationale'],
-          properties: {
-            type: { type: 'string' },
-            rationale: { type: 'string' },
-            progressionIntent: {
-              type: 'object',
-              properties: {
-                domain: { type: 'string' },
-                phaseTarget: { type: 'string' },
-              },
-            },
-          },
-        },
-        evening: {
-          type: 'object',
-          required: ['type', 'rationale'],
-          properties: {
-            type: { type: 'string' },
-            rationale: { type: 'string' },
-            progressionIntent: {
-              type: 'object',
-              properties: {
-                domain: { type: 'string' },
-                phaseTarget: { type: 'string' },
-              },
-            },
-          },
-        },
-      },
-    },
-  },
-},
-  };
-}
-
-function buildAIPlanningPrompt(state, goals = {}, interviewAnswers = {}) {
-  const horizonDays = clamp(toNum(state.programConfig?.aiPlanHorizonDays, 7), 3, 7);
-  const dateKeys = getRollingDateKeys(horizonDays);
-  const scheduleTimes = {
-morning: state.programConfig?.weekdayMorningTime || '07:30',
-evening: state.programConfig?.weekdayEveningTime || '19:00',
-  };
-  const skipDebtScore = toNum(state.planState?.skipDebtScore, 0);
-  const martialNext = computeNextMartialPhase(state);
-  const recentOverrides = collectRecentManualOverrides(state, 21, 10);
-  const injuryFlags = Object.entries(state.constraints?.injuries || {})
-.filter(([, v]) => !!v)
-.map(([k]) => k);
-  const priorityTypes = getPriorityTypes(getSessionBalance(state.sessionLogs), state)
-.slice(0, 4)
-.map(item => `${item.type} (P${Math.round(item.score)})`)
-.join(', ');
-  const interviewText = Object.entries(interviewAnswers || {})
-.map(([k, v]) => `- ${k}: ${String(v || '').trim() || 'none'}`)
-.join('\n') || '- none';
-  const overrideText = recentOverrides.length
-? recentOverrides.map(item => `- ${item.sessionType}: ${item.from} -> ${item.to}`).join('\n')
-: '- none';
-
-  const goalSummary = {
-primaryGoalType: goals.primaryGoalType || state.profile?.primaryGoalType || 'performance',
-secondaryGoals: Array.isArray(goals.secondaryGoals) ? goals.secondaryGoals : (state.profile?.secondaryGoals || []),
-timelineWeeks: toNum(goals.timelineWeeks, state.profile?.timelineWeeks || 12),
-priorityDomains: Array.isArray(goals.priorityDomains) ? goals.priorityDomains : (state.profile?.priorityDomains || []),
-goalNotes: goals.goalNotes || state.profile?.goalNotes || '',
-mustAvoidTags: Array.isArray(goals.mustAvoidTags) ? goals.mustAvoidTags : (state.profile?.mustAvoidTags || []),
-  };
-
-  return `You are the primary planner for a performance training app.
-Return only valid JSON. No markdown. No explanations outside JSON.
-
-PLANNING RULES:
-- Build a ${horizonDays}-day rolling plan starting today.
-- Use only session types: gym, martialArts, running, mobility.
-- Keep 2 slots on weekdays only: morning (${scheduleTimes.morning}) and evening (${scheduleTimes.evening}).
-- Reassign weekday slot session types only within bounded limits (${state.programConfig?.slotReassignPolicy || 'bounded_reassign'}).
-- Weekends stay present in the days array, but may use mobility-focused or light sessions.
-- Martial progression must follow: technical -> conditioning -> sparring.
-- If skip debt exists, increase accountability and reduce progression aggressiveness.
-- Respect injuries/constraints. Never prescribe unsafe pairings.
-- Keep domain balance and avoid repeating one high-intensity type excessively.
-
-ATHLETE CONTEXT:
-- Name: ${state.profile?.name || 'Athlete'}
-- Readiness: ${state.readiness?.score || 70} (${state.readiness?.band || 'moderate'})
-- Current block: ${state.profile?.currentBlock || 'accumulation'}
-- Skip debt score: ${skipDebtScore}
-- Consecutive skipped slots: ${toNum(state.planState?.consecutiveSkippedSlots, 0)}
-- Martial next target: ${martialNext.phaseTarget}
-- Priority ranking: ${priorityTypes}
-- Injury flags: ${injuryFlags.length ? injuryFlags.join(', ') : 'none'}
-- Time override: ${state.constraints?.timeOverrideMinutes || 'none'}
-
-GOALS:
-- Primary goal type: ${goalSummary.primaryGoalType}
-- Secondary goals: ${(goalSummary.secondaryGoals || []).join(', ') || 'none'}
-- Timeline weeks: ${goalSummary.timelineWeeks}
-- Priority domains: ${(goalSummary.priorityDomains || []).join(', ') || 'none'}
-- Goal notes: ${goalSummary.goalNotes || 'none'}
-- Must avoid tags: ${(goalSummary.mustAvoidTags || []).join(', ') || 'none'}
-
-TODAY INTERVIEW:
-${interviewText}
-
-RECENT MANUAL OVERRIDES:
-${overrideText}
-
-REQUIRED DATES:
-${dateKeys.map(key => `- ${key}`).join('\n')}
-
-OUTPUT JSON SHAPE:
-{
-  "weekStart": "YYYY-MM-DD",
-  "weeklyFocus": "string",
-  "watchout": "string",
-  "days": [
-{
-  "date": "YYYY-MM-DD",
-  "rationale": "string",
-  "morning": {
-    "type": "gym|martialArts|running|mobility",
-    "rationale": "string",
-    "progressionIntent": { "domain": "string", "phaseTarget": "technical|conditioning|sparring" }
-  },
-  "evening": {
-    "type": "gym|martialArts|running|mobility",
-    "rationale": "string",
-    "progressionIntent": { "domain": "string", "phaseTarget": "technical|conditioning|sparring" }
-  }
-}
-  ]
-}`;
-}
-
-function normalizePlanSessionType(type) {
-  const normalized = String(type || '').trim().toLowerCase();
-  if (!normalized) return 'gym';
-  if (normalized === 'gym' || normalized === 'strength' || normalized === 'strengthskills' || normalized === 'strength_skills') return 'gym';
-  if (normalized === 'martialarts' || normalized === 'martial_arts' || normalized === 'martial') return 'martialArts';
-  if (normalized === 'running' || normalized === 'run' || normalized === 'conditioning') return 'running';
-  if (normalized === 'mobility' || normalized === 'recovery' || normalized === 'cooloff') return 'mobility';
-  return AI_PLANNER_ALLOWED_TYPES.has(type) ? type : 'gym';
-}
-
-function validateAIPlanSchema(plan, state) {
-  if (!plan || typeof plan !== 'object' || Array.isArray(plan)) {
-throw createGeminiParseError('planning', JSON.stringify(plan), 'invalid_json', 'primary');
-  }
-
-  if (!Array.isArray(plan.days) || plan.days.length === 0) {
-throw createGeminiParseError('planning', JSON.stringify(plan), 'invalid_json', 'primary');
-  }
-
-  const horizonDays = clamp(toNum(state.programConfig?.aiPlanHorizonDays, 7), 3, 7);
-  const requiredKeys = new Set(getRollingDateKeys(horizonDays));
-  const normalizedDays = [];
-
-  for (const day of plan.days) {
-const dateKey = String(day?.date || '').trim();
-if (!dateKey) continue;
-const morning = day?.morning && typeof day.morning === 'object' ? day.morning : null;
-const evening = day?.evening && typeof day.evening === 'object' ? day.evening : null;
-normalizedDays.push({
-  date: dateKey,
-  rationale: String(day?.rationale || '').trim(),
-  morning: morning ? {
-    type: normalizePlanSessionType(morning.type),
-    rationale: String(morning.rationale || '').trim(),
-    progressionIntent: morning.progressionIntent || null,
-  } : null,
-  evening: evening ? {
-    type: normalizePlanSessionType(evening.type),
-    rationale: String(evening.rationale || '').trim(),
-    progressionIntent: evening.progressionIntent || null,
-  } : null,
-});
-requiredKeys.delete(dateKey);
-  }
-
-  return {
-id: plan.id || `ai_plan_${Date.now()}`,
-generatedAt: new Date().toISOString(),
-weekStart: String(plan.weekStart || getWeekStart(new Date()).toISOString().slice(0, 10)),
-weeklyFocus: String(plan.weeklyFocus || '').trim(),
-watchout: String(plan.watchout || '').trim(),
-days: normalizedDays,
-missingDates: Array.from(requiredKeys),
-  };
-}
-
-function defaultProgressionIntentForType(type, state) {
-  if (type === 'martialArts') {
-const martial = computeNextMartialPhase(state);
-return { domain: 'martialArts', phaseTarget: martial.phaseTarget };
-  }
-  return { domain: getDomainFromType(type, null) || type };
-}
-
-function mapAIPlanToScheduledSlots(plan, state) {
-  const cfg = state.programConfig || {};
-  const morningTime = cfg.weekdayMorningTime || '07:30';
-  const eveningTime = cfg.weekdayEveningTime || '19:00';
-  const nowIso = new Date().toISOString();
-  const existingByDate = { ...(state.planState?.scheduledSlotsByDate || {}) };
-  const merged = { ...existingByDate };
-
-  for (const day of plan.days || []) {
-const dateKey = String(day?.date || '').trim();
-if (!dateKey) continue;
-const dateObj = new Date(`${dateKey}T00:00:00`);
-if (!isWeekdayDate(dateObj)) continue;
-
-const prevDay = merged[dateKey] || {};
-const nextDay = { ...prevDay };
-for (const slotKey of ['morning', 'evening']) {
-  const prevSlot = prevDay[slotKey];
-  if (prevSlot && (prevSlot.status === 'completed' || prevSlot.status === 'skipped')) {
-    nextDay[slotKey] = prevSlot;
-    continue;
-  }
-  const plannedSlot = day?.[slotKey] || {};
-  const type = normalizePlanSessionType(plannedSlot?.type || prevSlot?.type || 'gym');
-  const scheduledTime = slotKey === 'morning' ? morningTime : eveningTime;
-  nextDay[slotKey] = {
-    ...(prevSlot || {}),
-    type,
-    slot: slotKey,
-    status: 'pending',
-    scheduledTime,
-    dueAt: getSlotDueDate(dateKey, scheduledTime).toISOString(),
-    source: 'ai_plan',
-    aiPlanId: plan.id,
-    aiRationale: String(plannedSlot?.rationale || day?.rationale || '').trim(),
-    progressionIntent: plannedSlot?.progressionIntent || prevSlot?.progressionIntent || defaultProgressionIntentForType(type, state),
-    strictPrompt: `Scheduled ${slotKey.toUpperCase()} session from AI plan. Complete this slot and protect progression.`,
-    createdAt: prevSlot?.createdAt || nowIso,
-    updatedAt: nowIso,
-  };
-}
-merged[dateKey] = nextDay;
-  }
-
-  return merged;
-}
-
-function applyPlanningGuardrails(plan, state) {
-  const guardrailFixes = [];
-  const horizonDays = clamp(toNum(state.programConfig?.aiPlanHorizonDays, 7), 3, 7);
-  const rankedTypes = getPriorityTypes(getSessionBalance(state.sessionLogs), state).map(item => item.type);
-  const fallbackTypeFor = (slotIndex = 0) => rankedTypes[slotIndex % Math.max(1, rankedTypes.length)] || 'gym';
-  const byDate = new Map((plan.days || []).map(day => [day.date, { ...day }]));
-
-  for (const dateKey of getRollingDateKeys(horizonDays)) {
-if (!byDate.has(dateKey)) {
-  guardrailFixes.push(`Inserted missing day ${dateKey}.`);
-  byDate.set(dateKey, { date: dateKey, rationale: 'Guardrail inserted missing planning day.' });
-}
-const day = byDate.get(dateKey);
-const dateObj = new Date(`${dateKey}T00:00:00`);
-const weekday = isWeekdayDate(dateObj);
-if (!weekday) {
-  day.morning = day.morning || { type: 'mobility', rationale: 'Weekend recovery-biased slot.' };
-  day.evening = day.evening || { type: 'mobility', rationale: 'Weekend recovery-biased slot.' };
-  continue;
-}
-for (const slotKey of ['morning', 'evening']) {
-  if (!day[slotKey] || typeof day[slotKey] !== 'object') {
-    day[slotKey] = { type: fallbackTypeFor(slotKey === 'morning' ? 0 : 1), rationale: 'Guardrail filled missing slot.' };
-    guardrailFixes.push(`Filled missing ${slotKey} slot on ${dateKey}.`);
-  }
-  day[slotKey].type = normalizePlanSessionType(day[slotKey].type);
-  if (!AI_PLANNER_ALLOWED_TYPES.has(day[slotKey].type)) {
-    day[slotKey].type = fallbackTypeFor(slotKey === 'morning' ? 0 : 1);
-    guardrailFixes.push(`Corrected invalid session type on ${dateKey} ${slotKey}.`);
-  }
-  if (!String(day[slotKey].rationale || '').trim()) {
-    day[slotKey].rationale = 'Guardrail-generated rationale for safe progression continuity.';
-  }
-  day[slotKey].progressionIntent = day[slotKey].progressionIntent || defaultProgressionIntentForType(day[slotKey].type, state);
-}
-  }
-
-  const injuries = state.constraints?.injuries || {};
-  for (const day of byDate.values()) {
-for (const slotKey of ['morning', 'evening']) {
-  const slot = day[slotKey];
-  if (!slot) continue;
-  let nextType = slot.type;
-  if (injuries.knee && nextType === 'running') nextType = 'mobility';
-  if (injuries.back && nextType === 'gym') nextType = 'mobility';
-  if (injuries.shoulder && (nextType === 'gym' || nextType === 'martialArts')) nextType = 'mobility';
-  if (nextType !== slot.type) {
-    guardrailFixes.push(`Adjusted ${day.date} ${slotKey} due to injury constraints.`);
-    slot.type = nextType;
-    slot.rationale = `${slot.rationale} (guardrail: injury-safe adjustment)`.trim();
-    slot.progressionIntent = defaultProgressionIntentForType(nextType, state);
-  }
-}
-  }
-
-  const sortedWeekdaySlots = [];
-  for (const dateKey of getRollingDateKeys(horizonDays)) {
-const day = byDate.get(dateKey);
-const weekday = isWeekdayDate(new Date(`${dateKey}T00:00:00`));
-if (!weekday || !day) continue;
-sortedWeekdaySlots.push({ dateKey, slotKey: 'morning', slot: day.morning });
-sortedWeekdaySlots.push({ dateKey, slotKey: 'evening', slot: day.evening });
-  }
-  let highStreak = 0;
-  for (const item of sortedWeekdaySlots) {
-const isHigh = item.slot?.type === 'gym' || item.slot?.type === 'martialArts' || item.slot?.type === 'running';
-highStreak = isHigh ? highStreak + 1 : 0;
-if (highStreak > 3) {
-  item.slot.type = 'mobility';
-  item.slot.rationale = `${item.slot.rationale} (guardrail: high-intensity streak break)`.trim();
-  item.slot.progressionIntent = defaultProgressionIntentForType('mobility', state);
-  highStreak = 0;
-  guardrailFixes.push(`Converted ${item.dateKey} ${item.slotKey} to mobility to break intensity streak.`);
-}
-  }
-
-  const skipDebt = toNum(state.planState?.skipDebtScore, 0);
-  if (skipDebt > 0 && sortedWeekdaySlots.length > 0) {
-const skippedTypeCounts = getSkippedSlotTypeCounts(state.planState, 21);
-const debtType = Object.entries(skippedTypeCounts)
-  .sort((a, b) => b[1] - a[1])[0]?.[0] || fallbackTypeFor(0);
-const firstSlot = sortedWeekdaySlots[0].slot;
-if (firstSlot && firstSlot.type !== debtType && AI_PLANNER_ALLOWED_TYPES.has(debtType)) {
-  firstSlot.type = debtType;
-  firstSlot.rationale = `Accountability priority: recover skipped ${debtType} exposure early.`;
-  firstSlot.progressionIntent = defaultProgressionIntentForType(debtType, state);
-  guardrailFixes.push('Applied skip-debt accountability override to first pending weekday slot.');
-}
-  }
-
-  const normalizedPlan = {
-...plan,
-days: Array.from(byDate.values()).sort((a, b) => String(a.date).localeCompare(String(b.date))),
-  };
-  return {
-plan: normalizedPlan,
-guardrailFixes,
-source: guardrailFixes.length ? 'ai_guardrail_corrected' : 'ai',
-  };
-}
-
-async function callGeminiPlanningWithRetry({ apiKey, model, state, goals, interviewAnswers }) {
-  const planningModel = normalizeGeminiModel(model || state.aiConfig?.planningModel || state.aiConfig?.model);
-  const endpoint = buildGeminiEndpoint(planningModel);
-  const schema = buildAIPlanningSchema();
-  const prompt = buildAIPlanningPrompt(state, goals, interviewAnswers);
-  const body = {
-contents: [{ parts: [{ text: prompt }] }],
-generationConfig: {
-  temperature: 0.2,
-  maxOutputTokens: 1024,
-  responseMimeType: 'application/json',
-  responseSchema: schema,
-},
-  };
-  const payload = await callGeminiWithRetry({
-apiKey,
-endpoint,
-body,
-requestType: 'AI workout planning',
-timeoutMs: AI_PLAN_REQUEST_TIMEOUT_MS,
-retryDelaysMs: AI_PLAN_RETRY_DELAYS_MS,
-maxRetryAfterMs: AI_PLAN_MAX_RETRY_AFTER_MS,
-  });
-  const rawText = sanitizeGeminiText(extractGeminiText(payload));
-  if (!rawText) throw createGeminiParseError('planning', '', 'blocked_or_empty', 'primary');
-  const parsed = parseGeminiJson(rawText, 'planning');
-  return { parsed, endpoint, model: planningModel };
-}
-
-function fallbackToDeterministicPlan(state, reason = 'AI planning unavailable') {
-  return {
-source: 'fallback_engine',
-status: 'fallback',
-reason,
-  };
-}
-
-function recordManualPlanEdits(session, edits = []) {
-  if (!session || !Array.isArray(edits) || edits.length === 0) return [];
-  return edits.map(edit => ({
-at: edit?.at || new Date().toISOString(),
-type: 'manual_plan_edit',
-sessionType: session?.type || 'unknown',
-oldId: edit?.oldId || '',
-newId: edit?.newId || '',
-oldName: edit?.oldName || '',
-newName: edit?.newName || '',
-  }));
-}
-
-function markScheduledSlotCompleted(planState, prescription, completedAt, sessionType) {
-  const dateKey = prescription?.scheduledDate;
-  const slot = prescription?.scheduledSlot;
-  if (!dateKey || !slot) return planState;
-  const byDate = { ...(planState?.scheduledSlotsByDate || {}) };
-  const day = { ...(byDate[dateKey] || {}) };
-  const current = day[slot];
-  if (!current) return planState;
-  day[slot] = {
-...current,
-status: 'completed',
-completedAt,
-completedSessionType: sessionType,
-updatedAt: completedAt,
-  };
-  byDate[dateKey] = day;
-  return {
-...planState,
-scheduledSlotsByDate: byDate,
-skipDebtScore: Math.max(0, toNum(planState?.skipDebtScore, 0) - 1),
-consecutiveSkippedSlots: 0,
-lastScheduleReplanAt: completedAt,
-  };
-}
-
-function getSessionBalance(logs, now = new Date()) {
-  const weekStart = getWeekStart(now);
-  const balance = { gym:0, martialArts:0, running:0, mobility:0 };
-  for (const log of logs || []) {
-if (new Date(log.timestamp) >= weekStart) {
-  // Legacy 'calisthenics' logs count toward gym
-  const key = log.type === 'calisthenics' ? 'gym' : log.type;
-  if (key in balance) balance[key] = (balance[key] || 0) + 1;
-}
-  }
-  return balance;
-}
-
-function getRecentLogs(logs, days = 7) {
-  const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - days);
-  return (logs || []).filter(log => new Date(log.timestamp) >= cutoff);
-}
-
-function pickRandom(arr) {
-  if (!arr?.length) return null;
-  return arr[Math.floor(Math.random() * arr.length)];
-}
-
-function enrichPrescribedExercise(ex, state, intensityTag) {
-  const volumeScale = intensityTag === 'low' ? 0.75 : intensityTag === 'high' ? 1.1 : 1;
-  const progressionKey = ex.progressionTrackId || ex.id;
-  const nextHint = state.progression.exercises[progressionKey]?.nextPrescription || state.progression.exercises[ex.id]?.nextPrescription || null;
-  const prescribedSets = ex.sets ? clamp(Math.round(ex.sets * volumeScale), 1, 10) : null;
-
-  return {
-...ex,
-sets: prescribedSets || ex.sets,
-prescribedLoadHint: nextHint?.loadHint || '',
-prescribedNote: nextHint?.note || '',
-  };
-}
-
-function getSelectionConfig(state) {
-  const cfg = state.programConfig || {};
-  return {
-strategy: cfg.exerciseSelectionStrategy || 'progress_history_v2',
-lookbackDays: clamp(toNum(cfg.historyLookbackDays, 30), 7, 60),
-hardNoRepeatDays: clamp(toNum(cfg.hardNoRepeatDays, 2), 0, 7),
-gymAnchorCount: clamp(toNum(cfg.gymAnchorCount, 2), 0, 3),
-seedMode: cfg.dailyVariationSeedMode || 'date_type',
-  };
-}
-
-function stableHash(input) {
-  let h = 2166136261;
-  const str = String(input || '');
-  for (let i = 0; i < str.length; i++) {
-h ^= str.charCodeAt(i);
-h = Math.imul(h, 16777619);
-  }
-  return h >>> 0;
-}
-
-function seededTieBreak(seed, key) {
-  return (stableHash(`${seed}:${key}`) % 1000) / 1000;
-}
-
-function getProgressionKey(exOrResult) {
-  return exOrResult?.progressionTrackId || exOrResult?.progressionKey || exOrResult?.exerciseId || exOrResult?.id || '';
-}
-
-function buildRecentUsage(state, lookbackDays) {
-  const nowMs = Date.now();
-  const cutoffMs = nowMs - (lookbackDays * 24 * 60 * 60 * 1000);
-  const usage = {
-nowMs,
-lastByExercise: new Map(),
-lastByTrack: new Map(),
-countByTrack: new Map(),
-countByFamily: new Map(),
-  };
-
-  for (const log of state.sessionLogs || []) {
-const ts = Date.parse(log.completedAt || log.timestamp || '');
-if (!Number.isFinite(ts) || ts < cutoffMs) continue;
-for (const ex of log.exercises || []) {
-  if (!ex?.id) continue;
-  const track = getProgressionKey(ex) || ex.id;
-  const family = ex.movementFamily || ex.pattern || 'general';
-  const prevEx = usage.lastByExercise.get(ex.id) || 0;
-  const prevTrack = usage.lastByTrack.get(track) || 0;
-  usage.lastByExercise.set(ex.id, Math.max(prevEx, ts));
-  usage.lastByTrack.set(track, Math.max(prevTrack, ts));
-  usage.countByTrack.set(track, (usage.countByTrack.get(track) || 0) + 1);
-  usage.countByFamily.set(family, (usage.countByFamily.get(family) || 0) + 1);
-}
-  }
-
-  return usage;
-}
-
-function getDaysSince(timestampMs, nowMs) {
-  if (!Number.isFinite(timestampMs)) return Number.POSITIVE_INFINITY;
-  return (nowMs - timestampMs) / (24 * 60 * 60 * 1000);
-}
-
-function isExerciseSelectable(ex, state, blockedPatterns) {
-  if (!ex) return false;
-  if (blockedPatterns.includes(ex.pattern)) return false;
-  const unavailable = new Set(state.constraints?.unavailableEquipment || []);
-  if (unavailable.size > 0 && (ex.equipmentTags || []).some(tag => unavailable.has(tag))) return false;
-  return true;
-}
-
-function scoreProgressionNeed(ex, state, sessionType, usage) {
-  const progressionKey = getProgressionKey(ex) || ex.id;
-  const p = state.progression.exercises[progressionKey] || state.progression.exercises[ex.id] || null;
-  let score = 0;
-  const reasons = [];
-  const isStalled = (state.progression.stalledItems || []).some(item =>
-item.type === sessionType && (item.id === progressionKey || item.id === ex.id)
-  );
-  if (isStalled) {
-score += 24;
-reasons.push('stalled item');
-  }
-  if (!p) {
-score += 10;
-reasons.push('new track');
-  } else {
-if (p.lastOutcome === 'regress') {
-  score += 18;
-  reasons.push('recent regress');
-} else if (p.lastOutcome === 'hold') {
-  score += 10;
-  reasons.push('consolidate');
-} else if (p.lastOutcome === 'advance') {
-  score += 6;
-  reasons.push('continue progression');
-}
-const lastTrackTs = usage.lastByTrack.get(progressionKey);
-const days = getDaysSince(lastTrackTs, usage.nowMs);
-if (days > 8) {
-  score += 8;
-  reasons.push('not trained recently');
-}
-  }
-  return { score, reasons };
-}
-
-function scoreExerciseCandidate(ex, state, sessionType, selected, usage, selectionConfig, seed, pass, intensityTag) {
-  const progressionKey = getProgressionKey(ex) || ex.id;
-  const family = ex.movementFamily || ex.pattern || 'general';
-  const lastTs = Math.max(
-usage.lastByExercise.get(ex.id) || 0,
-usage.lastByTrack.get(progressionKey) || 0
-  );
-  const daysSince = getDaysSince(lastTs, usage.nowMs);
-  const hardBlocked = Number.isFinite(daysSince) && daysSince <= pass.hardNoRepeatDays;
-
-  let score = 0;
-  const rationale = [];
-
-  if (hardBlocked) {
-score -= 140;
-rationale.push(`used ${daysSince.toFixed(1)}d ago`);
-  } else if (Number.isFinite(daysSince) && daysSince <= pass.lookbackDays) {
-score -= 40;
-rationale.push('recently used');
-  } else {
-score += 10;
-rationale.push('fresh pick');
-  }
-
-  const progression = scoreProgressionNeed(ex, state, sessionType, usage);
-  score += progression.score;
-  if (progression.reasons.length) rationale.push(...progression.reasons);
-
-  const familyCount = selected.filter(item => (item.movementFamily || item.pattern || 'general') === family).length;
-  if (familyCount === 0) {
-score += 8;
-  } else {
-score -= familyCount * 10;
-rationale.push('family already covered');
-  }
-
-  const duplicateTrackCount = selected.filter(item => getProgressionKey(item) === progressionKey).length;
-  if (duplicateTrackCount > 0) {
-score -= 25;
-rationale.push('track already selected');
-  }
-
-  if (selectionConfig.strategy === 'progress_history_v2') {
-if (intensityTag === 'low' && ex.difficultyTier === 'advanced') score -= 6;
-if (intensityTag === 'high' && toNum(ex.rpe ?? ex.targetRPE, 6) >= 8) score += 4;
-  }
-
-  score += seededTieBreak(seed, ex.id) * 2;
-  return { ex, score, hardBlocked, rationale };
-}
-
-function pickRankedExercises(candidates, desiredCount, state, sessionType, usage, selectionConfig, seed, intensityTag = 'moderate') {
-  const selected = [];
-  const rationaleByExerciseId = {};
-  const passes = [
-{ hardNoRepeatDays: selectionConfig.hardNoRepeatDays, lookbackDays: selectionConfig.lookbackDays },
-{ hardNoRepeatDays: 0, lookbackDays: selectionConfig.lookbackDays },
-{ hardNoRepeatDays: 0, lookbackDays: Math.max(0, Math.floor(selectionConfig.lookbackDays / 2)) },
-{ hardNoRepeatDays: 0, lookbackDays: 0 },
-  ];
-
-  for (const pass of passes) {
-while (selected.length < desiredCount) {
-  const scored = candidates
-    .filter(ex => !selected.some(s => s.id === ex.id))
-    .map(ex => scoreExerciseCandidate(ex, state, sessionType, selected, usage, selectionConfig, seed, pass, intensityTag))
-    .sort((a, b) => b.score - a.score);
-  if (!scored.length) break;
-
-  let picked = scored[0];
-  if (picked.hardBlocked) {
-    const fallback = scored.find(item => !item.hardBlocked);
-    if (fallback) picked = fallback;
-  }
-  selected.push(picked.ex);
-  rationaleByExerciseId[picked.ex.id] = picked.rationale.join(' · ');
-}
-if (selected.length >= desiredCount) break;
-  }
-
-  return { selected: selected.slice(0, desiredCount), rationaleByExerciseId };
-}
-
-function pickGymAnchors(candidates, count, state, sessionType, usage, seed) {
-  if (count <= 0 || !candidates.length) return [];
-  const ranked = candidates
-.map(ex => {
-  const progression = scoreProgressionNeed(ex, state, sessionType, usage).score;
-  const family = ex.movementFamily || ex.pattern || 'general';
-  const lastTs = Math.max(usage.lastByExercise.get(ex.id) || 0, usage.lastByTrack.get(getProgressionKey(ex)) || 0);
-  const daysSince = getDaysSince(lastTs, usage.nowMs);
-  const freshness = Number.isFinite(daysSince) ? Math.min(daysSince, 20) : 12;
-  const score = progression + freshness + (family === 'squat' || family === 'hinge' ? 6 : 0) + seededTieBreak(seed, `anchor:${ex.id}`);
-  return { ex, family, score };
-})
-.sort((a, b) => b.score - a.score);
-
-  const anchors = [];
-  const usedFamilies = new Set();
-  for (const item of ranked) {
-if (anchors.length >= count) break;
-if (usedFamilies.has(item.family)) continue;
-anchors.push(item.ex);
-usedFamilies.add(item.family);
-  }
-  for (const item of ranked) {
-if (anchors.length >= count) break;
-if (anchors.some(a => a.id === item.ex.id)) continue;
-anchors.push(item.ex);
-  }
-  return anchors.slice(0, count);
-}
-
-function buildSkillBandCandidates(state, blockedPatterns) {
-  const skills = state.domains.calisthenics.skills || {};
-  const candidates = [];
-  for (const [skill, data] of Object.entries(skills)) {
-const db = EXERCISE_DB_V5.calisthenics[skill] || [];
-const level = clamp(toNum(data.level, 1), 1, 12);
-let pool = db.filter(item => Math.abs(toNum(item.level, level) - level) <= 1);
-if (!pool.length) pool = db.filter(item => toNum(item.level, 1) === level);
-if (!pool.length) pool = db;
-if (skill === 'handstand' && blockedPatterns.includes('inversion')) {
-  pool = db.filter(item => toNum(item.level, 1) <= 2);
-}
-if (skill === 'pullUp' && blockedPatterns.includes('vertical-pull')) {
-  pool = db.filter(item => toNum(item.level, 1) <= 2);
-}
-for (const ex of pool) {
-  candidates.push({ ...ex, skillTag: skill });
-}
-  }
-  return candidates;
-}
-
-function generateWorkout(type, state, maSubtype, intensityTag = 'moderate', timeMinutes = 60, sessionVariant = null, options = {}) {
-  const timeBase = timeMinutes <= 30 ? 2 : timeMinutes <= 45 ? 3 : timeMinutes <= 60 ? 5 : timeMinutes <= 75 ? 6 : 7;
-  const coachStyle = state.programConfig?.coachStyle || 'adaptive-flexible';
-  const styleAdjust = coachStyle === 'light-touch' ? -1 : 0;
-  const capExercises = Math.max(2, timeBase + styleAdjust);
-  const selectionConfig = getSelectionConfig(state);
-  const seed = `${new Date().toISOString().slice(0, 10)}:${type}:${state.profile.sessionCount}:${selectionConfig.seedMode}`;
-  const blockedPatterns = getBlockedPatterns(state.constraints);
-  const usage = buildRecentUsage(state, selectionConfig.lookbackDays);
-  let exercises = [];
-  let selectionMeta = {
-algorithmVersion: 'progress_history_v2',
-anchorIds: [],
-lookbackDays: selectionConfig.lookbackDays,
-rationaleByExerciseId: {},
-  };
-
-  if (type === 'gym') {
-const safeLower = EXERCISE_DB_V5.strength.legs.filter(ex => isExerciseSelectable(ex, state, blockedPatterns));
-const safeUpper = EXERCISE_DB_V5.strength.upper.filter(ex => isExerciseSelectable(ex, state, blockedPatterns));
-const safeFull = EXERCISE_DB_V5.strength.full.filter(ex => isExerciseSelectable(ex, state, blockedPatterns));
-const lowerPool = safeLower.length ? safeLower : safeUpper;
-const upperPool = safeUpper.length ? safeUpper : safeFull;
-const barbellSlots = Math.ceil(capExercises * 0.55);
-const skillSlots = capExercises - barbellSlots;
-const barbellCandidates = [...lowerPool, ...upperPool, ...safeFull];
-const skillCandidates = buildSkillBandCandidates(state, blockedPatterns).filter(ex => isExerciseSelectable(ex, state, blockedPatterns));
-
-const anchors = pickGymAnchors(barbellCandidates, selectionConfig.gymAnchorCount, state, type, usage, seed);
-const anchorIds = anchors.map(ex => ex.id);
-const remainingBarbellPool = barbellCandidates.filter(ex => !anchorIds.includes(ex.id));
-const pickedBarbell = pickRankedExercises(
-  remainingBarbellPool,
-  Math.max(0, barbellSlots - anchors.length),
-  state,
-  type,
-  usage,
-  selectionConfig,
-  `${seed}:barbell`,
-  intensityTag
-);
-const pickedSkills = pickRankedExercises(
-  skillCandidates,
-  Math.max(0, skillSlots),
-  state,
-  type,
-  usage,
-  selectionConfig,
-  `${seed}:skills`,
-  intensityTag
-);
-exercises = [...anchors, ...pickedBarbell.selected, ...pickedSkills.selected].slice(0, capExercises);
-selectionMeta = {
-  ...selectionMeta,
-  anchorIds,
-  rationaleByExerciseId: {
-    ...Object.fromEntries(anchors.map(ex => [ex.id, 'Anchor: progression continuity'])),
-    ...pickedBarbell.rationaleByExerciseId,
-    ...pickedSkills.rationaleByExerciseId,
-  },
-};
-  } else if (type === 'martialArts') {
-const db = maSubtype === 'striking' ? EXERCISE_DB_V5.striking : EXERCISE_DB_V5.grappling;
-const maSessionSubtype = options?.maSessionSubtype || options?.progressionIntent?.phaseTarget || 'technical';
-const sortedBySubtype = [...db].sort((a, b) => {
-  const arpe = toNum(a.rpe || a.targetRPE, 6);
-  const brpe = toNum(b.rpe || b.targetRPE, 6);
-  if (maSessionSubtype === 'technical') return arpe - brpe;
-  if (maSessionSubtype === 'sparring') return brpe - arpe;
-  return Math.abs(7 - arpe) - Math.abs(7 - brpe);
-});
-const safe = db.filter(ex => isExerciseSelectable(ex, state, blockedPatterns));
-const picked = pickRankedExercises(
-  safe.length ? sortedBySubtype.filter(ex => safe.some(s => s.id === ex.id)) : sortedBySubtype,
-  Math.max(1, capExercises - 1),
-  state,
-  type,
-  usage,
-  selectionConfig,
-  `${seed}:${maSubtype || 'ma'}`,
-  intensityTag
-);
-exercises = picked.selected;
-selectionMeta.rationaleByExerciseId = Object.fromEntries(
-  Object.entries(picked.rationaleByExerciseId).map(([id, rationale]) => ([
-    id,
-    `${rationale} · phase=${maSessionSubtype}`,
-  ]))
-);
-  } else if (type === 'running') {
-const safeRun = EXERCISE_DB_V5.running
-  .filter(ex => isExerciseSelectable(ex, state, blockedPatterns))
-  .filter(ex => !blockedPatterns.includes('aerobic') || toNum(ex.targetRPE, 6) <= 4);
-const picked = pickRankedExercises(
-  safeRun.length ? safeRun : EXERCISE_DB_V5.running,
-  1,
-  state,
-  type,
-  usage,
-  selectionConfig,
-  `${seed}:running`,
-  intensityTag
-);
-exercises = picked.selected;
-selectionMeta.rationaleByExerciseId = picked.rationaleByExerciseId;
-  } else if (type === 'mobility') {
-if (sessionVariant === 'micro-break') {
-  const requestedMinutes = Number(timeMinutes);
-  const targetMinutes = [2, 3, 5].includes(requestedMinutes) ? requestedMinutes : 3;
-  const exactPool = MICRO_BREAK_MOBILITY_FLOWS.filter(flow => flow.microFlow?.minutes === targetMinutes);
-  const fallbackPool = exactPool.length ? exactPool : MICRO_BREAK_MOBILITY_FLOWS.filter(flow => flow.microFlow?.minutes === 3);
-  const picked = pickRankedExercises(
-    fallbackPool,
-    1,
-    state,
-    type,
-    usage,
-    selectionConfig,
-    `${seed}:micro:${targetMinutes}`,
-    intensityTag
-  );
-  exercises = picked.selected;
-  selectionMeta.rationaleByExerciseId = picked.rationaleByExerciseId;
-} else {
-  const safeMobility = EXERCISE_DB_V5.mobility.filter(ex => isExerciseSelectable(ex, state, blockedPatterns));
-  const picked = pickRankedExercises(
-    safeMobility.length ? safeMobility : EXERCISE_DB_V5.mobility,
-    Math.max(1, capExercises - 2),
-    state,
-    type,
-    usage,
-    selectionConfig,
-    `${seed}:mobility`,
-    intensityTag
-  );
-  exercises = picked.selected;
-  selectionMeta.rationaleByExerciseId = picked.rationaleByExerciseId;
-}
-  }
-
-  const normalized = exercises.filter(Boolean).map(ex => enrichPrescribedExercise(ex, state, intensityTag));
-  if (!normalized.length) {
-const fallback = type === 'running'
-  ? [EXERCISE_DB_V5.running[0]]
-  : type === 'martialArts'
-    ? [(maSubtype === 'striking' ? EXERCISE_DB_V5.striking : EXERCISE_DB_V5.grappling)[0]]
-    : type === 'mobility'
-      ? [EXERCISE_DB_V5.mobility[0]]
-      : [EXERCISE_DB_V5.strength.legs[0], EXERCISE_DB_V5.strength.upper[0]];
-return {
-  exercises: fallback.filter(Boolean).map(ex => enrichPrescribedExercise(ex, state, intensityTag)),
-  selectionMeta: {
-    ...selectionMeta,
-    rationaleByExerciseId: { ...(selectionMeta.rationaleByExerciseId || {}), fallback: 'Fallback due to pool constraints' },
-  },
-};
-  }
-
-  return { exercises: normalized, selectionMeta };
-}
-
-function computeAthleteModelFromState(state) {
-  const logs = state.sessionLogs || [];
-  const recent14 = getRecentLogs(logs, 14);
-  const recent30 = getRecentLogs(logs, 30);
-
-  const domainScores = {};
-  for (const domain of DOMAIN_KEYS) {
-// Use getDomainsFromType to handle gym covering both strength + calisthenics
-const affectedLogs = logs.filter(log => getDomainsFromType(log.type, log.maSubtype).includes(domain));
-const sessions = affectedLogs.length;
-const quality = affectedLogs.slice(-8).reduce((acc, log) => acc + (log.completionQuality || 60), 0);
-const qAvg = sessions ? quality / Math.min(sessions, 8) : 55;
-domainScores[domain] = clamp(Math.round((sessions * 3) + qAvg * 0.7), 35, 100);
-  }
-
-  const fatigueDebt = recent14.reduce((acc, log) => acc + Math.max(0, (toNum(log.rpe, 5) - 7) * 4), 0);
-  const consistencyScore = clamp(Math.round((recent14.length / 10) * 100), 0, 100);
-  const controlFromSkills = Object.values(state.domains.calisthenics.skills)
-.reduce((acc, skill) => acc + toNum(skill.level, 1), 0);
-  const controlScore = clamp(Math.round((controlFromSkills * 4.5) + (domainScores.mobility * 0.4)), 0, 100);
-  const adaptationConfidence = clamp(Number((logs.length / 80).toFixed(2)), 0, 1);
-
-  const performanceTrend = recent30.slice(-12).map(log => ({
-x: new Date(log.timestamp).toLocaleDateString(),
-quality: log.completionQuality || 60,
-  }));
-
-  return {
-domainScores,
-controlScore,
-fatigueDebt,
-consistencyScore,
-adaptationConfidence,
-readinessTrend: [...(state.athleteModel?.readinessTrend || [])].slice(-20),
-performanceTrend,
-  };
-}
-
-function computeSessionPriority(type, state, balance, now = new Date()) {
-  const target = FREQUENCY_TARGETS[type].perWeek;
-  const done = balance[type] || 0;
-  const deficitNeed = (target - done) * 12;
-
-  const lastLog = state.sessionLogs[state.sessionLogs.length - 1];
-  const freshnessBonus = lastLog?.type === type ? -6 : 4;
-
-  const recent48 = (state.sessionLogs || []).filter(log => (now.getTime() - new Date(log.timestamp).getTime()) <= 48 * 60 * 60 * 1000);
-  const sameTypeStrain = recent48
-.filter(log => log.type === type)
-.reduce((acc, log) => acc + Math.max(0, toNum(log.rpe, 5) - 6), 0);
-  const fatiguePenalty = sameTypeStrain * 4 + Math.max(0, state.athleteModel.fatigueDebt - 20) * 0.3;
-
-  const progressionUrgency = (state.progression.stalledItems || []).filter(item => item.type === type).length * 8;
-  const skippedTypeCounts = getSkippedSlotTypeCounts(state.planState, 14);
-  const skipDebtScore = toNum(state.planState?.skipDebtScore, 0);
-  const skippedUrgency = (toNum(skippedTypeCounts[type], 0) * 10) + (skipDebtScore > 0 ? 3 : 0);
-  // Skill urgency: gym now includes calisthenics, so low-level skills boost gym priority
-  const skillUrgency = type === 'gym'
-? Object.values(state.domains.calisthenics.skills).reduce((acc, s) => acc + (s.level <= 2 ? 2 : 0), 0) * 2
-: 0;
-
-  const injuries = state.constraints.injuries || {};
-  const constraintPenalty =
-((injuries.knee && (type === 'gym' || type === 'running')) ? 14 : 0) +
-((injuries.back && type === 'gym') ? 14 : 0) +
-((injuries.shoulder && (type === 'martialArts' || type === 'gym')) ? 10 : 0);
-
-  // Muscle recovery penalties
-  let musclePenalty = 0;
-  if (type === 'gym') {
-if (state.muscleRecovery?.quads?.status === 'fatigued' || state.muscleRecovery?.lowerBack?.status === 'fatigued') musclePenalty += 20;
-if (state.muscleRecovery?.shoulders?.status === 'fatigued') musclePenalty += 10;
-  } else if (type === 'martialArts') {
-if (state.muscleRecovery?.fullBody?.status === 'fatigued') musclePenalty += 15;
-  } else if (type === 'running') {
-if (state.muscleRecovery?.quads?.status === 'fatigued' || state.muscleRecovery?.calves?.status === 'fatigued') musclePenalty += 15;
-  }
-
-  const score = deficitNeed + progressionUrgency + skippedUrgency + skillUrgency + freshnessBonus - fatiguePenalty - constraintPenalty - musclePenalty;
-  return { type, score, done, target, deficit: target - done };
-}
-
-function buildRollingPlanForState(state) {
-  const balance = getSessionBalance(state.sessionLogs);
-  const ranked = SESSION_TYPES.map(type => computeSessionPriority(type, state, balance)).sort((a, b) => b.score - a.score);
-  const [deterministicPrimary, deterministicSecondary] = ranked;
-  const readiness = state.readiness;
-  const timeFit = state.constraints.timeOverrideMinutes || state.programConfig.defaultSessionMinutes;
-  const schedulePatch = applySkipDebtAndReplan(state, ranked);
-  const martialNext = computeNextMartialPhase(state);
-  const planningEnabled = isAIPlanningEnabled(state);
-  const aiPlan = state.planState?.aiPlan || null;
-  const aiPlanStatus = state.planState?.aiPlanStatus || 'idle';
-  const aiPlanSource = state.planState?.aiPlanSource || 'fallback_engine';
-  const hasUsableAIPlan = planningEnabled
-&& AI_PRIMARY_PLAN_SOURCES.has(aiPlanSource)
-&& aiPlan
-&& Array.isArray(aiPlan.days)
-&& aiPlan.days.length > 0;
-  const scheduledSlotsByDate = hasUsableAIPlan
-? (state.planState?.scheduledSlotsByDate || {})
-: schedulePatch.scheduledSlotsByDate;
-  const todayDateKey = getLocalDateKey(new Date());
-  const todaySlots = scheduledSlotsByDate?.[todayDateKey] || {};
-
-  const deterministicReasonText = deterministicPrimary
-? `${FREQUENCY_TARGETS[deterministicPrimary.type].label} selected: deficit ${deterministicPrimary.deficit > 0 ? deterministicPrimary.deficit : 0}, readiness ${readiness.score}, fatigue debt ${Math.round(state.athleteModel.fatigueDebt)}${schedulePatch.skipDebtScore > 0 ? `, skip debt ${schedulePatch.skipDebtScore}` : ''}`
-: 'No recommendation yet';
-  const deterministicWeeklyFocus = ranked.slice(0, 2).map(r => FREQUENCY_TARGETS[r.type].label).join(' + ');
-  const baseWatchout =
-state.athleteModel.fatigueDebt > 35
-  ? 'Fatigue debt high: prioritize quality over intensity.'
-  : readiness.band === 'low'
-    ? 'Low readiness: use recovery-biased session variants.'
-    : 'No major risk flags.';
-
-  let primary = deterministicPrimary || null;
-  let secondary = deterministicSecondary || null;
-  let reasonText = deterministicReasonText;
-  let weeklyFocus = deterministicWeeklyFocus;
-  let watchout = schedulePatch.strictWatchout || baseWatchout;
-  let upcoming = ranked.slice(0, 4);
-
-  if (hasUsableAIPlan) {
-const dayPlan = (aiPlan.days || []).find(day => day?.date === todayDateKey) || null;
-const orderedSlots = ['morning', 'evening']
-  .map(slot => todaySlots?.[slot])
-  .filter(Boolean);
-const pendingSlots = orderedSlots.filter(slot => slot.status === 'pending');
-const recommendedSlots = pendingSlots.length ? pendingSlots : orderedSlots;
-const toPriority = (slot) => {
-  const fallback = ranked.find(item => item.type === slot?.type);
-  return fallback ? { ...fallback, type: slot.type } : computeSessionPriority(slot?.type || 'gym', state, balance);
-};
-if (recommendedSlots[0]) primary = toPriority(recommendedSlots[0]);
-if (recommendedSlots[1]) secondary = toPriority(recommendedSlots[1]);
-reasonText =
-  recommendedSlots.map(slot => slot.aiRationale || slot.strictPrompt).filter(Boolean).join(' ')
-  || dayPlan?.rationale
-  || `AI generated a ${clamp(toNum(state.programConfig?.aiPlanHorizonDays, 7), 3, 7)}-day rolling plan.`;
-weeklyFocus = aiPlan.weeklyFocus || deterministicWeeklyFocus;
-watchout = schedulePatch.strictWatchout || aiPlan.watchout || baseWatchout;
-upcoming = (aiPlan.days || [])
-  .flatMap(day => (['morning', 'evening'].map(slotKey => {
-    const slot = day?.[slotKey];
-    if (!slot || !slot.type) return null;
-    const priority = computeSessionPriority(normalizePlanSessionType(slot.type), state, balance);
-    return {
-      ...priority,
-      type: normalizePlanSessionType(slot.type),
-      slot: slotKey,
-      date: day.date,
-      aiRationale: slot.rationale || day?.rationale || '',
-    };
-  })))
-  .filter(Boolean)
-  .slice(0, 4);
-  }
-
-  return {
-generatedAt: new Date().toISOString(),
-primaryRecommendation: primary || null,
-secondaryRecommendation: secondary || null,
-reasonText,
-weeklyFocus,
-watchout,
-upcoming,
-acknowledgedPrompts: { ...(state.planState?.acknowledgedPrompts || {}) },
-progressionPrompts: state.planState?.progressionPrompts || [],
-weeklySummary: state.planState?.weeklySummary || null,
-weeklySummaryGeneratedAt: state.planState?.weeklySummaryGeneratedAt || null,
-weeklySummaryLoading: state.planState?.weeklySummaryLoading || false,
-weeklySummaryCooldownUntil: state.planState?.weeklySummaryCooldownUntil || null,
-weeklySummaryLastAttemptAt: state.planState?.weeklySummaryLastAttemptAt || null,
-weeklySummaryLastError: state.planState?.weeklySummaryLastError || null,
-exerciseHistoryIndex: state.planState?.exerciseHistoryIndex || {},
-lastGeneratedAtByType: state.planState?.lastGeneratedAtByType || {},
-scheduledSlotsByDate,
-skipDebtScore: schedulePatch.skipDebtScore,
-consecutiveSkippedSlots: schedulePatch.consecutiveSkippedSlots,
-lastScheduleReplanAt: schedulePatch.lastScheduleReplanAt,
-aiPlan,
-aiPlanStatus: planningEnabled
-  ? (hasUsableAIPlan ? 'ready' : aiPlanStatus)
-  : 'fallback',
-aiInterview: state.planState?.aiInterview || null,
-aiPlanLastError: state.planState?.aiPlanLastError || null,
-aiPlanSource: planningEnabled
-  ? (hasUsableAIPlan ? aiPlanSource : (state.planState?.aiPlanSource || 'fallback_engine'))
-  : 'fallback_engine',
-aiPlanCooldownUntil: state.planState?.aiPlanCooldownUntil || null,
-aiPlanLastAttemptAt: state.planState?.aiPlanLastAttemptAt || null,
-aiPlanLastFailureCode: state.planState?.aiPlanLastFailureCode ?? null,
-aiPlanLastFailureType: state.planState?.aiPlanLastFailureType || null,
-aiPlanNeedsRefresh: !!state.planState?.aiPlanNeedsRefresh,
-martialArtsNextPhase: martialNext.phaseTarget,
-martialArtsNextRationale: martialNext.rationale,
-timeFit,
-  };
-}
-
-function getPriorityTypes(balance, state) {
-  const ranked = SESSION_TYPES.map(type => computeSessionPriority(type, state, balance))
-.sort((a, b) => b.score - a.score);
-  return ranked.map(r => ({ ...r, label: FREQUENCY_TARGETS[r.type].label }));
-}
-
-function appendExerciseHistoryIndex(planState, sessionType, maSubtype, exercises, completedAt) {
-  const key = sessionType === 'martialArts' ? `martialArts:${maSubtype || 'mixed'}` : sessionType;
-  const existing = (planState?.exerciseHistoryIndex && Array.isArray(planState.exerciseHistoryIndex[key]))
-? planState.exerciseHistoryIndex[key]
-: [];
-  const additions = (exercises || []).map(ex => ({
-exerciseId: ex.id,
-progressionTrackId: getProgressionKey(ex) || ex.id,
-completedAt,
-  }));
-  return {
-...(planState?.exerciseHistoryIndex || {}),
-[key]: [...additions, ...existing].slice(0, 240),
-  };
-}
-
-function createExerciseResult(ex) {
-  return {
-exerciseId: ex.id,
-progressionKey: getProgressionKey(ex) || ex.id,
-prescribed: {
-  sets: ex.sets || null,
-  reps: ex.reps || '',
-  loadHint: ex.prescribedLoadHint || '',
-  duration: ex.duration || '',
-  distance: ex.distance || '',
-  targetRPE: ex.rpe || ex.targetRPE || null,
-},
-performed: {
-  setsCompleted: 0,
-  topMetric: '',
-  effortRPE: ex.rpe || ex.targetRPE || 5,
-  pain: false,
-},
-outcome: 'hold',
-  };
-}
-
-function createSessionFromType(state, type, source = 'manual', timeMinutes = null, options = {}) {
-  const sessionVariant = options?.sessionVariant || null;
-  const reasonOverride = options?.reasonOverride || null;
-  const scheduledSlot = options?.scheduledSlot || null;
-  const scheduledDate = options?.scheduledDate || null;
-  const progressionIntent = options?.progressionIntent || null;
-  const plannerSource = options?.plannerSource
-|| (AI_PRIMARY_PLAN_SOURCES.has(state.planState?.aiPlanSource) ? 'ai' : 'fallback_engine');
-  const aiPlanId = options?.aiPlanId || state.planState?.aiPlan?.id || null;
-  const aiRationale = options?.aiRationale || null;
-  const guardrailFixes = Array.isArray(options?.guardrailFixes)
-? options.guardrailFixes
-: (Array.isArray(state.planState?.aiPlan?.guardrailFixes) ? state.planState.aiPlan.guardrailFixes : []);
-  const martialProgression = computeNextMartialPhase(state);
-  const maSessionSubtype = type === 'martialArts'
-? (options?.maSessionSubtype || progressionIntent?.phaseTarget || martialProgression.phaseTarget || 'technical')
-: null;
-  const maSubtype = type === 'martialArts' ? getMartialArtsSubtype(state.sessionLogs) : null;
-  const readinessBand = state.readiness.band || 'moderate';
-  let intensityTag = readinessBand === 'low' ? 'low' : readinessBand === 'high' ? 'high' : 'moderate';
-  if (scheduledSlot === 'morning' && intensityTag === 'high') intensityTag = 'moderate';
-  if (scheduledSlot === 'evening' && readinessBand !== 'low' && intensityTag === 'moderate') intensityTag = 'high';
-  const actualTimeMinutes = timeMinutes || state.constraints.timeOverrideMinutes || state.programConfig.defaultSessionMinutes || 60;
-  const generated = generateWorkout(type, state, maSubtype, intensityTag, actualTimeMinutes, sessionVariant, {
-maSessionSubtype,
-progressionIntent,
-scheduledSlot,
-  });
-  const exercises = (generated?.exercises || generated || []).filter(Boolean);
-  const exerciseResults = exercises.map(createExerciseResult);
-  const blockRPE = { accumulation:7, intensification:8, realization:9, deload:5 };
-  const baseTarget = blockRPE[state.profile.currentBlock] || 7;
-  const targetRPE = clamp(baseTarget + (readinessBand === 'high' ? 1 : readinessBand === 'low' ? -1 : 0), 5, 9);
-
-  return {
-id: `session_${Date.now()}`,
-type,
-maSubtype,
-maSessionSubtype,
-exercises,
-exerciseResults,
-prescription: {
-  sessionType: type,
-  sessionVariant,
-  intensityTag,
-  targetRPE,
-  reasonText: reasonOverride
-    || aiRationale
-    || (scheduledSlot ? `Scheduled ${String(scheduledSlot).toUpperCase()} slot. Complete this session and protect progression.` : state.planState.reasonText),
-  source,
-  timeFit: actualTimeMinutes,
-  scheduledSlot,
-  scheduledDate,
-  plannerSource,
-  aiPlanId,
-  aiRationale,
-  guardrailFixes,
-  progressionIntent: progressionIntent || (type === 'martialArts' ? { domain: 'martialArts', phaseTarget: maSessionSubtype } : null),
-  selectionMeta: generated?.selectionMeta || null,
-},
-readinessSnapshot: {
-  score: state.readiness.score,
-  band: state.readiness.band,
-  inputs: { ...state.readiness.inputs },
-  at: new Date().toISOString(),
-},
-manualEdits: [],
-timestamp: new Date().toISOString(),
-  };
-}
-
-function evaluateExerciseOutcome(result) {
-  const targetRPE = toNum(result.prescribed.targetRPE, 7);
-  const sets = toNum(result.prescribed.sets, 0);
-  const done = toNum(result.performed.setsCompleted, 0);
-  const effort = toNum(result.performed.effortRPE, targetRPE);
-  if (result.performed.pain) return 'regress';
-  if (sets > 0 && done < Math.max(1, Math.floor(sets * 0.6))) return 'regress';
-  if (done >= sets && effort <= targetRPE - 1) return 'advance';
-  if (effort >= targetRPE + 2) return 'regress';
-  return 'hold';
-}
-
-function computeCompletionQuality(rpe, recovery, exerciseResults, targetRPE) {
-  const outcomes = exerciseResults || [];
-  const completedRatio = outcomes.length
-? outcomes.filter(r => toNum(r?.performed?.setsCompleted, 0) > 0).length / outcomes.length
-: 0;
-  const rpeMatch = 1 - (Math.abs(toNum(rpe, targetRPE) - toNum(targetRPE, 7)) / 10);
-  const recoveryNorm = clamp(toNum(recovery, 5) / 10, 0, 1);
-  return Math.round(clamp((completedRatio * 45) + (rpeMatch * 35) + (recoveryNorm * 20), 0, 100));
-}
-
-function updateProgressionRecords(state, sessionType, exerciseResults, sessionRPE) {
-  const progression = {
-...state.progression,
-exercises: { ...state.progression.exercises },
-stalledItems: [...(state.progression.stalledItems || [])],
-  };
-
-  let advanced = 0;
-  let regressed = 0;
-  let held = 0;
-  const nowIso = new Date().toISOString();
-
-  for (const r of exerciseResults) {
-const outcome = evaluateExerciseOutcome(r);
-const progressionKey = getProgressionKey(r) || r.exerciseId;
-const legacyPrev = progression.exercises[r.exerciseId];
-const keyPrev = progression.exercises[progressionKey];
-const prev = keyPrev || legacyPrev || { exposures: 0, successes: 0, failures: 0, nextPrescription: null, history: [], selectionCount: 0 };
-if (progressionKey !== r.exerciseId && legacyPrev && !keyPrev) {
-  delete progression.exercises[r.exerciseId];
-}
-const historyEntry = {
-  date: nowIso.slice(0, 10),
-  exerciseId: r.exerciseId,
-  progressionKey,
-  topMetric: r.performed?.topMetric || '',
-  effortRPE: r.performed?.effortRPE || 0,
-  outcome,
-};
-const next = {
-  ...prev,
-  exposures: prev.exposures + 1,
-  lastOutcome: outcome,
-  lastTrainedAt: nowIso,
-  lastSelectedAt: nowIso,
-  selectionCount: toNum(prev.selectionCount, 0) + 1,
-  history: [...(prev.history || []).slice(-19), historyEntry],
-};
-if (outcome === 'advance') {
-  next.successes = prev.successes + 1;
-  next.nextPrescription = { loadHint: '+2.5kg / +1 rep next time', note: 'Progress criteria met' };
-  advanced += 1;
-} else if (outcome === 'regress') {
-  next.failures = prev.failures + 1;
-  next.nextPrescription = { loadHint: '-5% load or reduce volume', note: 'Recovery/technique before loading' };
-  regressed += 1;
-  const alreadyStalled = progression.stalledItems.some(item => item.id === progressionKey || item.id === r.exerciseId);
-  if (!alreadyStalled) {
-    progression.stalledItems.push({ id: progressionKey, type: sessionType, reason: r.performed.pain ? 'pain flag' : 'performance miss' });
-  }
-} else {
-  next.nextPrescription = { loadHint: 'Repeat previous target', note: 'Hold and consolidate' };
-  held += 1;
-}
-progression.exercises[progressionKey] = next;
-  }
-
-  progression.highRPEStreak = sessionRPE >= 8 ? (state.progression.highRPEStreak || 0) + 1 : 0;
-  progression.deloadRecommended = progression.highRPEStreak >= 3 || state.athleteModel.fatigueDebt > 40;
-  progression.stalledItems = progression.stalledItems.slice(-20);
-  progression.lastAdaptationSummary = `${advanced} advance · ${held} hold · ${regressed} regress`;
-
-  return {
-progression,
-adaptationApplied: {
-  summary: progression.lastAdaptationSummary,
-  deloadRecommended: progression.deloadRecommended,
-  nextFocus: progression.deloadRecommended ? 'Reduce intensity next 1-2 sessions.' : 'Continue progressive overload on advanced lifts.',
-},
-  };
-}
-
-function completeSessionInternal(state, payload = {}) {
-  if (!state.activeSession) return state;
-
-  const rpe = clamp(toNum(payload.rpe, 6), 1, 10);
-  const recovery = clamp(toNum(payload.recovery, 6), 1, 10);
-  const notes = payload.notes || '';
-  const completeAsModified = !!payload.completeAsModified;
-  const sessionType = state.currentSessionType;
-
-  const exerciseResults = (state.activeSession.exerciseResults || []).map(r => ({
-...r,
-outcome: evaluateExerciseOutcome(r),
-  }));
-
-  const progressionUpdate = updateProgressionRecords(state, sessionType, exerciseResults, rpe);
-  let progression = progressionUpdate.progression;
-  let adaptationApplied = progressionUpdate.adaptationApplied;
-  const completionQuality = computeCompletionQuality(rpe, recovery, exerciseResults, state.activeSession.prescription?.targetRPE);
-  const newLog = {
-...state.activeSession,
-id: state.activeSession.id || `log_${Date.now()}`,
-rpe,
-recovery,
-notes,
-exerciseResults,
-completionQuality,
-adaptationApplied,
-completedAsModified: completeAsModified,
-manualEdits: Array.isArray(state.activeSession?.manualEdits) ? state.activeSession.manualEdits : [],
-completedAt: new Date().toISOString(),
-  };
-  const updatedExerciseHistoryIndex = appendExerciseHistoryIndex(
-state.planState,
-sessionType,
-state.currentMASubtype,
-newLog.exercises || [],
-newLog.completedAt
-  );
-
-  if (sessionType === 'martialArts') {
-const phaseDone = state.activeSession?.maSessionSubtype || 'technical';
-const prevMA = progression.martialArts || createProgression().martialArts;
-const completedByPhase = {
-  technical: toNum(prevMA.completedByPhase?.technical, 0),
-  conditioning: toNum(prevMA.completedByPhase?.conditioning, 0),
-  sparring: toNum(prevMA.completedByPhase?.sparring, 0),
-};
-if (phaseDone in completedByPhase) completedByPhase[phaseDone] += 1;
-const readinessDelta = phaseDone === 'technical' ? 6 : phaseDone === 'conditioning' ? 4 : 2;
-const adjustedReadiness = clamp(toNum(prevMA.readinessScore, 50) + readinessDelta - (rpe >= 9 ? 2 : 0), 0, 100);
-const projectedState = {
-  ...state,
-  progression: { ...progression, martialArts: { ...prevMA, readinessScore: adjustedReadiness, completedByPhase } },
-  planState: {
-    ...state.planState,
-    skipDebtScore: Math.max(0, toNum(state.planState?.skipDebtScore, 0) - 1),
-    consecutiveSkippedSlots: 0,
-  },
-};
-const nextPhase = computeNextMartialPhase(projectedState, { baseReadiness: adjustedReadiness });
-progression = {
-  ...progression,
-  martialArts: {
-    ...prevMA,
-    readinessScore: nextPhase.readinessScore,
-    currentPhase: nextPhase.phaseTarget,
-    completedByPhase,
-    recentPhaseHistory: [
-      ...(prevMA.recentPhaseHistory || []).slice(-39),
-      { at: newLog.completedAt, phase: phaseDone, rpe, quality: completionQuality },
+  gym: {
+    legs: [
+      { name: 'Back Squat',       sets: 4, reps: '5',   cue: 'Brace core, knees track toes, full depth',  muscles: ['quads','glutes'] },
+      { name: 'Deadlift',         sets: 3, reps: '5',   cue: 'Neutral spine, drive hips through, pull slack', muscles: ['hamstrings','back','glutes'] },
+      { name: 'Front Squat',      sets: 3, reps: '6',   cue: 'Elbows high, torso upright, own the hole',  muscles: ['quads','core'] },
+      { name: 'Romanian Deadlift',sets: 3, reps: '8',   cue: 'Hinge at hips, micro-bend knees, feel the hamstring stretch', muscles: ['hamstrings','glutes','lowerBack'] },
+      { name: 'Bulgarian Split Squat', sets: 3, reps: '8 each', cue: 'Rear foot elevated, shin vertical, control descent', muscles: ['quads','glutes','hipFlexors'] },
+      { name: 'Leg Press',        sets: 3, reps: '10',  cue: 'Full range, feet hip-width, do not lock knees at top', muscles: ['quads','glutes'] },
+      { name: 'Hack Squat',       sets: 3, reps: '10',  cue: 'Heels elevated, deep range, squeeze glutes at top', muscles: ['quads'] },
+      { name: 'Leg Curl',         sets: 3, reps: '12',  cue: 'Full extension, controlled curl, squeeze at top', muscles: ['hamstrings'] },
+      { name: 'Hip Thrust',       sets: 3, reps: '10',  cue: 'Bar across hips, drive through heels, full glute squeeze', muscles: ['glutes','hamstrings'] },
+      { name: 'Calf Raise',       sets: 4, reps: '15',  cue: 'Full ROM, pause at bottom, explosive up', muscles: ['calves'] },
+      { name: 'Walking Lunge',    sets: 3, reps: '12 each', cue: 'Long stride, upright torso, knee touches floor', muscles: ['quads','glutes','hipFlexors'] },
+    ],
+    upper: [
+      { name: 'Bench Press',       sets: 4, reps: '5',   cue: 'Retract scapula, slight arch, bar to lower chest', muscles: ['chest','shoulders','arms'] },
+      { name: 'Overhead Press',    sets: 3, reps: '6',   cue: 'Bar from clavicle, press around chin, lock out fully', muscles: ['shoulders','arms'] },
+      { name: 'Barbell Row',       sets: 3, reps: '6',   cue: 'Hinge 45°, bar to sternum, elbows back, squeeze', muscles: ['back','arms'] },
+      { name: 'Pull-up',           sets: 3, reps: 'max', cue: 'Dead hang start, drive elbows to hips, chin over bar', muscles: ['back','arms'] },
+      { name: 'Incline DB Press',  sets: 3, reps: '8',   cue: '30° incline, control descent, press to center', muscles: ['chest','shoulders'] },
+      { name: 'Dips',              sets: 3, reps: '10',  cue: 'Lean forward for chest, upright for triceps', muscles: ['chest','arms','shoulders'] },
+      { name: 'Cable Row',         sets: 3, reps: '10',  cue: 'Chest tall, pull to waist, retract blades at end', muscles: ['back','arms'] },
+      { name: 'Face Pull',         sets: 3, reps: '15',  cue: 'Rope to forehead, elbows high, external rotate', muscles: ['shoulders','back'] },
+      { name: 'DB Curl',           sets: 3, reps: '12',  cue: 'No swing, supinate at top, control descent', muscles: ['arms'] },
+      { name: 'Skull Crusher',     sets: 3, reps: '12',  cue: 'Bar to forehead, elbows fixed, lock out', muscles: ['arms'] },
+      { name: 'Lateral Raise',     sets: 3, reps: '15',  cue: 'Lead with elbow, slight lean, no shrug', muscles: ['shoulders'] },
+    ],
+    fullBody: [
+      { name: 'Power Clean',       sets: 4, reps: '3',   cue: 'Explosive hip drive, high pull, catch in rack', muscles: ['fullBody'] },
+      { name: 'Trap Bar Deadlift', sets: 3, reps: '5',   cue: 'Neutral spine, push floor away, stand tall', muscles: ['fullBody','quads','hamstrings'] },
+      { name: 'KB Swing',          sets: 4, reps: '15',  cue: 'Hip hinge not squat, snap hips, float at top', muscles: ['fullBody','glutes','hamstrings'] },
+      { name: 'Thruster',          sets: 3, reps: '8',   cue: 'Squat catches momentum, drive bar overhead', muscles: ['fullBody','quads','shoulders'] },
+      { name: 'Bear Complex',      sets: 3, reps: '5',   cue: 'Power clean → front squat → push press → back squat → push press', muscles: ['fullBody'] },
     ],
   },
-};
-adaptationApplied = {
-  ...adaptationApplied,
-  nextFocus: `Martial progression: completed ${phaseDone.toUpperCase()} today. Next target: ${nextPhase.phaseTarget.toUpperCase()}.`,
-};
-newLog.adaptationApplied = adaptationApplied;
-  }
 
-  const domainKeys = getDomainsFromType(sessionType, state.currentMASubtype);
-  const newDomains = { ...state.domains };
-  for (const domainKey of domainKeys) {
-if (domainKey && newDomains[domainKey]) {
-  newDomains[domainKey] = {
-    ...newDomains[domainKey],
-    sessions: newDomains[domainKey].sessions + 1,
-    trend: [...(newDomains[domainKey].trend || []), { s: state.profile.sessionCount + 1, rpe }],
-  };
-}
-  }
-  // Tally running distance from actuals
-  if (sessionType === 'running' && newDomains.conditioning) {
-const weekStartIso = getWeekStart(new Date()).toISOString();
-const weekStartMs = Date.parse(weekStartIso);
-const resetAtMs = newDomains.conditioning.weeklyKmResetAt ? Date.parse(newDomains.conditioning.weeklyKmResetAt) : NaN;
-const shouldResetWeeklyKm = !newDomains.conditioning.weeklyKmResetAt || !Number.isFinite(resetAtMs) || resetAtMs < weekStartMs;
-const conditioningBase = shouldResetWeeklyKm
-  ? { ...newDomains.conditioning, weeklyKm: 0, weeklyKmResetAt: weekStartIso }
-  : { ...newDomains.conditioning };
-
-const runKm = exerciseResults.reduce((acc, r) => {
-  const d = parseFloat(r.performed?.actualDistance);
-  return acc + (Number.isFinite(d) ? d : 0);
-}, 0);
-newDomains.conditioning = {
-  ...conditioningBase,
-  weeklyKm: runKm > 0 ? (toNum(conditioningBase.weeklyKm, 0) + runKm) : toNum(conditioningBase.weeklyKm, 0),
-};
-  }
-
-  // Update muscle recovery
-  const sessionExercises = state.activeSession?.exercises || [];
-  const newMuscleRecovery = updateMuscleRecovery(state.muscleRecovery, sessionExercises);
-
-  const basePlanState = {
-...state.planState,
-exerciseHistoryIndex: updatedExerciseHistoryIndex,
-aiPlanNeedsRefresh: true,
-  };
-  const completedPlanState = markScheduledSlotCompleted(
-basePlanState,
-state.activeSession?.prescription,
-newLog.completedAt,
-sessionType
-  );
-
-  const nextState = {
-...state,
-sessionLogs: [...state.sessionLogs, newLog],
-lastSessionTypes: [...state.lastSessionTypes, state.currentSessionType].slice(-12),
-activeSession: null,
-currentSessionType: null,
-currentMASubtype: null,
-profile: { ...state.profile, sessionCount: state.profile.sessionCount + 1 },
-domains: newDomains,
-progression,
-muscleRecovery: newMuscleRecovery,
-planState: completedPlanState,
-view: 'home',
-  };
-
-  const athleteModel = computeAthleteModelFromState(nextState);
-  const planState = buildRollingPlanForState({ ...nextState, athleteModel });
-  const decisionLog = [
-...(state.decisionLog || []),
-{
-  at: new Date().toISOString(),
-  type: 'session_completed',
-  sessionType,
-  completionQuality,
-  adaptationSummary: adaptationApplied.summary,
-  reason: newLog.prescription?.reasonText || state.planState.reasonText,
-},
-...recordManualPlanEdits(newLog, newLog.manualEdits || []),
-  ].slice(-120);
-
-  const progressionPrompts = (sessionType === 'gym' || sessionType === 'calisthenics')
-? checkCalisthenicsProgressionPrompts(nextState.sessionLogs, nextState.domains.calisthenics.skills)
-: (planState.progressionPrompts || []);
-
-  return { ...nextState, athleteModel, planState: { ...planState, progressionPrompts }, decisionLog };
-}
-
-function getFallbackDomainForLog(log) {
-  if (log?.type === 'martialArts') return log?.maSubtype === 'striking' ? 'striking' : 'grappling';
-  if (log?.type === 'running') return 'running';
-  if (log?.type === 'mobility') return 'mobility';
-  return 'strength';
-}
-
-function migrateSessionLog(log, idx) {
-  const id = log.id || `legacy_${idx}_${Date.parse(log.timestamp || new Date().toISOString())}`;
-  const fallbackDomain = getFallbackDomainForLog(log);
-  const exercises = (Array.isArray(log.exercises) ? log.exercises : [])
-.map((ex, exIdx) => enrichExercise(ex, ex?.domain || fallbackDomain, ex?.group || fallbackDomain, exIdx));
-  const legacyPrescription = log.prescription || {
-sessionType: log.type,
-intensityTag: 'moderate',
-targetRPE: log.rpe || 7,
-source: 'legacy',
-reasonText: 'Imported legacy session',
-timeFit: 60,
-  };
-  const normalizedPrescription = {
-sessionVariant: null,
-selectionMeta: null,
-scheduledSlot: null,
-scheduledDate: null,
-progressionIntent: null,
-...legacyPrescription,
-  };
-  const exerciseMap = new Map();
-  for (const ex of exercises) {
-exerciseMap.set(ex.id, ex);
-exerciseMap.set(slugify(ex.name), ex);
-  }
-  const exerciseResults = Array.isArray(log.exerciseResults) && log.exerciseResults.length
-? log.exerciseResults.map(r => {
-    const linked = exerciseMap.get(r.exerciseId) || exerciseMap.get(slugify(r.exerciseId || ''));
-    return {
-      ...r,
-      progressionKey: r.progressionKey || getProgressionKey(linked) || r.exerciseId,
-    };
-  })
-: exercises.map(ex => ({
-    exerciseId: ex.id || slugify(ex.name),
-    progressionKey: getProgressionKey(ex) || ex.id || slugify(ex.name),
-    prescribed: { sets: ex.sets || null, reps: ex.reps || '', duration: ex.duration || '', distance: ex.distance || '', targetRPE: ex.rpe || ex.targetRPE || null },
-    performed: { setsCompleted: ex.sets || 0, topMetric: '', effortRPE: log.rpe || 6, pain: false },
-    outcome: 'hold',
-  }));
-  return {
-...log,
-id,
-readinessSnapshot: log.readinessSnapshot || { score: 70, band: 'moderate', inputs: createReadiness().inputs, at: log.timestamp || new Date().toISOString() },
-prescription: normalizedPrescription,
-manualEdits: Array.isArray(log.manualEdits) ? log.manualEdits : [],
-exerciseResults,
-completionQuality: log.completionQuality || computeCompletionQuality(log.rpe || 6, log.recovery || 6, exerciseResults, log.rpe || 7),
-adaptationApplied: log.adaptationApplied || { summary: 'Legacy session', deloadRecommended: false, nextFocus: 'Continue baseline progression' },
-  };
-}
-
-function migrateState(raw) {
-  const base = createInitialState();
-  if (!raw || typeof raw !== 'object') {
-const athleteModel = computeAthleteModelFromState(base);
-const planState = buildRollingPlanForState({ ...base, athleteModel });
-return { ...base, athleteModel, planState };
-  }
-
-  const merged = {
-...base,
-...raw,
-profile: {
-  ...base.profile,
-  ...(raw.profile || {}),
-  timeByDay: raw.profile?.timeByDay || { mon:60, tue:60, wed:60, thu:60, fri:60, sat:90, sun:60 },
-  skillAssessments: raw.profile?.skillAssessments || { maxPullUps:0, maxPushUps:0, squatRM:0, deadliftRM:0, benchRM:0, runningPaceEasy:0, tuckPlancheHold:0, handstandHold:0 },
-  primaryGoal: raw.profile?.primaryGoal || 'complete_athlete',
-  goals: raw.profile?.goals || [],
-  primaryGoalType: raw.profile?.primaryGoalType || base.profile.primaryGoalType,
-  secondaryGoals: Array.isArray(raw.profile?.secondaryGoals) ? raw.profile.secondaryGoals : base.profile.secondaryGoals,
-  timelineWeeks: toNum(raw.profile?.timelineWeeks, base.profile.timelineWeeks),
-  priorityDomains: Array.isArray(raw.profile?.priorityDomains) ? raw.profile.priorityDomains : base.profile.priorityDomains,
-  goalNotes: raw.profile?.goalNotes || '',
-  mustAvoidTags: Array.isArray(raw.profile?.mustAvoidTags) ? raw.profile.mustAvoidTags : base.profile.mustAvoidTags,
-},
-programConfig: {
-  ...base.programConfig,
-  ...(raw.programConfig || {}),
-  featureFlags: { ...base.programConfig.featureFlags, ...(raw.programConfig?.featureFlags || {}) },
-},
-readiness: {
-  ...base.readiness,
-  ...(raw.readiness || {}),
-  inputs: { ...base.readiness.inputs, ...(raw.readiness?.inputs || {}) },
-},
-constraints: {
-  ...base.constraints,
-  ...(raw.constraints || {}),
-  injuries: { ...base.constraints.injuries, ...(raw.constraints?.injuries || {}) },
-},
-muscleRecovery: raw.muscleRecovery || createMuscleRecovery(),
-aiConfig: (() => {
-  const mergedAI = { ...createAIConfig(), ...(raw.aiConfig || {}) };
-  const normalizedModel = normalizeGeminiModel(mergedAI.model);
-  const normalizedPlanningModel = normalizeGeminiModel(mergedAI.planningModel || normalizedModel);
-  return {
-    ...mergedAI,
-    model: normalizedModel,
-    planningModel: normalizedPlanningModel,
-    planningEnabled: mergedAI.planningEnabled !== undefined ? !!mergedAI.planningEnabled : true,
-    endpoint: buildGeminiEndpoint(normalizedModel),
-  };
-})(),
-progression: {
-  ...base.progression,
-  ...(raw.progression || {}),
-  martialArts: {
-    ...base.progression.martialArts,
-    ...(raw.progression?.martialArts || {}),
-    completedByPhase: {
-      ...base.progression.martialArts.completedByPhase,
-      ...(raw.progression?.martialArts?.completedByPhase || {}),
-    },
-    recentPhaseHistory: Array.isArray(raw.progression?.martialArts?.recentPhaseHistory)
-      ? raw.progression.martialArts.recentPhaseHistory.slice(-40)
-      : base.progression.martialArts.recentPhaseHistory,
-  },
-  exercises: Object.fromEntries(
-    Object.entries({ ...(base.progression.exercises), ...(raw.progression?.exercises || {}) }).map(([key, value]) => ([
-      key,
-      {
-        selectionCount: 0,
-        lastSelectedAt: null,
-        ...(value || {}),
-      },
-    ]))
-  ),
-},
-athleteModel: { ...base.athleteModel, ...(raw.athleteModel || {}), domainScores: { ...base.athleteModel.domainScores, ...(raw.athleteModel?.domainScores || {}) } },
-planState: {
-  ...base.planState,
-  ...(raw.planState || {}),
-  weeklySummary: raw.planState?.weeklySummary || null,
-  weeklySummaryGeneratedAt: raw.planState?.weeklySummaryGeneratedAt || null,
-  weeklySummaryLoading: false,
-  weeklySummaryCooldownUntil: raw.planState?.weeklySummaryCooldownUntil || null,
-  weeklySummaryLastAttemptAt: raw.planState?.weeklySummaryLastAttemptAt || null,
-  weeklySummaryLastError: raw.planState?.weeklySummaryLastError || null,
-  exerciseHistoryIndex: raw.planState?.exerciseHistoryIndex || {},
-  lastGeneratedAtByType: raw.planState?.lastGeneratedAtByType || {},
-  scheduledSlotsByDate: raw.planState?.scheduledSlotsByDate || {},
-  skipDebtScore: toNum(raw.planState?.skipDebtScore, 0),
-  consecutiveSkippedSlots: toNum(raw.planState?.consecutiveSkippedSlots, 0),
-  lastScheduleReplanAt: raw.planState?.lastScheduleReplanAt || null,
-  aiPlan: raw.planState?.aiPlan || null,
-  aiPlanStatus: raw.planState?.aiPlanStatus || (raw.planState?.aiPlan ? 'ready' : 'idle'),
-  aiInterview: raw.planState?.aiInterview || null,
-  aiPlanLastError: raw.planState?.aiPlanLastError || null,
-  aiPlanSource: raw.planState?.aiPlanSource || (raw.planState?.aiPlan ? 'ai' : 'fallback_engine'),
-  aiPlanCooldownUntil: raw.planState?.aiPlanCooldownUntil || null,
-  aiPlanLastAttemptAt: raw.planState?.aiPlanLastAttemptAt || null,
-  aiPlanLastFailureCode: Number.isFinite(toNum(raw.planState?.aiPlanLastFailureCode, NaN))
-    && toNum(raw.planState?.aiPlanLastFailureCode, NaN) > 0
-    ? toNum(raw.planState?.aiPlanLastFailureCode, NaN)
-    : null,
-  aiPlanLastFailureType: raw.planState?.aiPlanLastFailureType || null,
-  aiPlanNeedsRefresh: raw.planState?.aiPlanNeedsRefresh !== undefined ? !!raw.planState.aiPlanNeedsRefresh : true,
-  martialArtsNextPhase: raw.planState?.martialArtsNextPhase || null,
-  martialArtsNextRationale: raw.planState?.martialArtsNextRationale || null,
-},
-domains: {
-  ...base.domains,
-  ...(raw.domains || {}),
   calisthenics: {
-    ...base.domains.calisthenics,
-    ...(raw.domains?.calisthenics || {}),
-    skills: { ...base.domains.calisthenics.skills, ...(raw.domains?.calisthenics?.skills || {}) },
+    pullUp: {
+      label: 'Pull-up / Back Chain',
+      levels: [
+        { name: 'Dead Hang',        sets: 3, reps: '30s hold', cue: 'Fully decompressed, packed shoulders',        muscles: ['back','arms'] },
+        { name: 'Assisted Pull-up', sets: 3, reps: '8',        cue: 'Band or negatives, full ROM',                 muscles: ['back','arms'] },
+        { name: 'Pull-up',          sets: 3, reps: '5',        cue: 'Chin over bar, dead hang between, own it',    muscles: ['back','arms'] },
+        { name: 'Pull-up — 3×8',    sets: 3, reps: '8',        cue: 'Consistent reps, no kipping',                 muscles: ['back','arms'] },
+        { name: 'Archer Pull-up',   sets: 3, reps: '5 each',   cue: 'One straight arm, shift weight laterally',    muscles: ['back','arms'] },
+        { name: 'L-Sit Pull-up',    sets: 3, reps: '5',        cue: 'Hold L-sit throughout, legs parallel floor',  muscles: ['back','arms','core'] },
+        { name: 'Typewriter Pull-up',sets:3, reps: '4 each',   cue: 'Travel bar side to side at top',              muscles: ['back','arms'] },
+        { name: 'Muscle-up Neg',    sets: 3, reps: '5',        cue: 'Start above bar, lower slow through transition', muscles: ['back','arms','shoulders'] },
+        { name: 'Muscle-up',        sets: 3, reps: '3',        cue: 'Explosive pull, lean forward, punch through', muscles: ['back','arms','shoulders'] },
+      ],
+    },
+    pushUp: {
+      label: 'Push-up / Push Chain',
+      levels: [
+        { name: 'Incline Push-up',      sets: 3, reps: '12',      cue: 'Hands elevated, straight body line',          muscles: ['chest','shoulders','arms'] },
+        { name: 'Push-up',              sets: 3, reps: '10',      cue: 'Hollow body, chest to floor, full lock out',  muscles: ['chest','shoulders','arms'] },
+        { name: 'Diamond Push-up',      sets: 3, reps: '10',      cue: 'Hands diamond, elbows travel back',           muscles: ['chest','arms'] },
+        { name: 'Wide Push-up',         sets: 3, reps: '12',      cue: 'Hands wide, chest focus, no wrist flare',     muscles: ['chest','shoulders'] },
+        { name: 'Decline Push-up',      sets: 3, reps: '10',      cue: 'Feet elevated, press toward feet',            muscles: ['chest','shoulders'] },
+        { name: 'Archer Push-up',       sets: 3, reps: '6 each',  cue: 'One arm straight, shift weight, full depth',  muscles: ['chest','shoulders','arms'] },
+        { name: 'Pseudo-Planche Push-up',sets:3, reps: '8',      cue: 'Fingers back, lean forward, feel shoulders',  muscles: ['chest','shoulders','arms'] },
+      ],
+    },
+    squat: {
+      label: 'Pistol Squat / Leg Chain',
+      levels: [
+        { name: 'Assisted Pistol',   sets: 3, reps: '5 each', cue: 'Ring or pole assistance, full depth', muscles: ['quads','glutes'] },
+        { name: 'Box Pistol',        sets: 3, reps: '5 each', cue: 'Sit to box, stand with 1 leg',        muscles: ['quads','glutes'] },
+        { name: 'Pistol Squat',      sets: 3, reps: '5 each', cue: 'Free standing, heel down, balance',   muscles: ['quads','glutes','core'] },
+        { name: 'Weighted Pistol',   sets: 3, reps: '5 each', cue: 'Plate or KB overhead, stay tall',     muscles: ['quads','glutes','core'] },
+        { name: 'Shrimp Squat',      sets: 3, reps: '5 each', cue: 'Rear foot to glute, knee barely touches', muscles: ['quads','glutes','hipFlexors'] },
+      ],
+    },
+    core: {
+      label: 'Core / Anti-Gravity',
+      levels: [
+        { name: 'Plank',            sets: 3, reps: '45s',     cue: 'Hollow body, squeeze everything',    muscles: ['core'] },
+        { name: 'Hollow Hold',      sets: 3, reps: '30s',     cue: 'Lower back pressed down, legs low',  muscles: ['core'] },
+        { name: 'L-Sit Tuck',       sets: 3, reps: '20s',     cue: 'Knees to chest, press down hard',    muscles: ['core','arms'] },
+        { name: 'L-Sit',            sets: 3, reps: '15s',     cue: 'Legs parallel floor, toes pointed',  muscles: ['core','arms','hipFlexors'] },
+        { name: 'V-Sit',            sets: 3, reps: '10s',     cue: '60° torso lean, legs higher than L', muscles: ['core','arms'] },
+        { name: 'Dragon Flag',      sets: 3, reps: '5',       cue: 'Lower from top, hollow spine, slow', muscles: ['core','lowerBack'] },
+      ],
+    },
+    handstand: {
+      label: 'Handstand Progression',
+      levels: [
+        { name: 'Wall Kick-up',        sets: 3, reps: '5×20s',  cue: 'Chest to wall, stacked wrists-shoulders', muscles: ['shoulders','arms','core'] },
+        { name: 'HS Shrug / Scaps',    sets: 3, reps: '10',     cue: 'Press through shoulders at top',          muscles: ['shoulders','core'] },
+        { name: 'Wall HS Hold',        sets: 3, reps: '30s',    cue: 'Straight line from wrist to ankle',       muscles: ['shoulders','core'] },
+        { name: 'Kick-up to Freestand',sets: 3, reps: '5×10s', cue: 'Controlled kick, balance with fingers',   muscles: ['shoulders','core'] },
+        { name: 'Freestanding HS',     sets: 3, reps: '20s',    cue: 'Press platform, active fingers, stack',   muscles: ['shoulders','core','arms'] },
+        { name: 'HS Walk',             sets: 3, reps: '5m',     cue: 'Shift weight to fingers, controlled fall',muscles: ['shoulders','core','arms'] },
+        { name: 'HSPU (Wall)',         sets: 3, reps: '3',      cue: 'Controlled descent to ear level, press',  muscles: ['shoulders','arms','core'] },
+      ],
+    },
   },
-  conditioning: {
-    ...base.domains.conditioning,
-    ...(raw.domains?.conditioning || {}),
-  },
-},
-sessionLogs: (raw.sessionLogs || []).map(migrateSessionLog),
-decisionLog: Array.isArray(raw.decisionLog) ? raw.decisionLog : [],
-  };
 
-  const weekStartIso = getWeekStart(new Date()).toISOString();
-  const weekStartMs = Date.parse(weekStartIso);
-  const conditioning = { ...merged.domains.conditioning };
-  const importedWeeklyKm = toNum(conditioning.weeklyKm, 0);
-  const resetAt = conditioning.weeklyKmResetAt || null;
-  const resetAtMs = resetAt ? Date.parse(resetAt) : NaN;
-  const shouldResetWeeklyKm = (!resetAt && importedWeeklyKm > 0) || (resetAt && (!Number.isFinite(resetAtMs) || resetAtMs < weekStartMs));
-  if (shouldResetWeeklyKm) {
-conditioning.weeklyKm = 0;
-conditioning.weeklyKmResetAt = weekStartIso;
-  } else {
-conditioning.weeklyKm = importedWeeklyKm;
-conditioning.weeklyKmResetAt = resetAt;
-  }
+  running: [
+    { name: 'Easy Run',       duration: '30-40 min', intensity: 'Zone 2',  cue: 'Can hold full conversation, nose breathe', muscles: ['calves','fullBody'] },
+    { name: 'Tempo Run',      duration: '25 min',    intensity: 'Zone 3-4',cue: 'Comfortably hard — two-word answers only',muscles: ['calves','fullBody'] },
+    { name: '400m Intervals', reps: '6×400m',        intensity: 'Zone 5',  cue: '90s rest between, controlled aggressive pace', muscles: ['calves','fullBody'] },
+    { name: 'Hill Sprints',   reps: '8×30s',         intensity: 'Max',     cue: 'Drive knees, pump arms, 2min walk back', muscles: ['calves','glutes','fullBody'] },
+    { name: 'Long Run',       duration: '50-70 min', intensity: 'Zone 2',  cue: 'Aerobic base builder, easy effort',       muscles: ['calves','fullBody'] },
+    { name: '1km Repeats',    reps: '4×1km',         intensity: 'Zone 4',  cue: '2min rest, target 5km race pace minus 10s', muscles: ['calves','fullBody'] },
+    { name: 'Fartlek',        duration: '30 min',    intensity: 'Mixed',   cue: 'Surge for lamp-posts or trees, free form', muscles: ['calves','fullBody'] },
+    { name: 'Strides',        reps: '6×20s',         intensity: 'Zone 5',  cue: 'Controlled sprint to 95%, full recovery', muscles: ['calves','fullBody'] },
+  ],
 
-  const readinessScored = calculateReadiness(merged.readiness.inputs);
-  let next = {
-...merged,
-domains: {
-  ...merged.domains,
-  conditioning,
-},
-readiness: { ...merged.readiness, ...readinessScored },
-  };
-  if (next.planState?.aiPlan && Object.keys(next.planState?.scheduledSlotsByDate || {}).length === 0) {
-next = {
-  ...next,
-  planState: {
-    ...next.planState,
-    scheduledSlotsByDate: mapAIPlanToScheduledSlots(next.planState.aiPlan, next),
+  martial_arts: {
+    striking: [
+      { name: 'Shadow Boxing',    duration: '4×3min', cue: 'Visualize opponent, work all ranges, footwork', muscles: ['shoulders','core','fullBody'] },
+      { name: 'Heavy Bag',        duration: '5×3min', cue: 'Power combos, move, reset, control breathing',  muscles: ['shoulders','arms','core'] },
+      { name: 'Pad Work',         duration: '4×3min', cue: 'Sharp technique, defender sets rhythm',         muscles: ['shoulders','arms','core'] },
+      { name: 'Sparring (Tech)',   duration: '5×3min', cue: 'Flow, no knockout shots, explore technique',   muscles: ['fullBody'] },
+      { name: 'Sparring (Full)',   duration: '5×3min', cue: 'Controlled intensity, reset on clinch break',  muscles: ['fullBody'] },
+      { name: 'Footwork Drill',   duration: '3×3min', cue: 'Angles, pivots, lateral movement patterns',    muscles: ['calves','core'] },
+      { name: 'Reaction Pads',    duration: '3×3min', cue: 'Hands up, explosive response, reset',          muscles: ['shoulders','core'] },
+      { name: 'Bag Combos',       duration: '4×3min', cue: 'Set 3-5 combination patterns, drill clean',    muscles: ['shoulders','arms','core'] },
+    ],
+    grappling: [
+      { name: 'Guard Passing',    duration: '3×5min', cue: 'Posture first, break grips, clear hip to hip',  muscles: ['back','core','hipFlexors'] },
+      { name: 'Takedown Drill',   duration: '4×3min', cue: 'Level change, penetration step, finish low',    muscles: ['legs','core','fullBody'] },
+      { name: 'Submission Flow',  duration: '3×5min', cue: 'Slow roll, link attacks, feel the geometry',    muscles: ['fullBody','core','arms'] },
+      { name: 'Positional Rounds',duration: '5×5min', cue: 'Start in specific position, work from there',   muscles: ['fullBody'] },
+      { name: 'Leg Lock Entry',   duration: '3×5min', cue: 'Inside position, heel hook vs kneebar, wedge',  muscles: ['core','legs','fullBody'] },
+      { name: 'Open Mat / Flow',  duration: '30 min', cue: 'No resistance, explore, think chess not checkers', muscles: ['fullBody'] },
+      { name: 'Drilling (Reps)',  sets: 3, reps: '20 each side', cue: 'Perfect reps, technical precision',  muscles: ['fullBody','core'] },
+    ],
+    general: [
+      { name: 'Jump Rope',        duration: '3×3min', cue: 'Light on feet, consistent rhythm, single unders', muscles: ['calves','shoulders','core'] },
+      { name: 'Medicine Ball',    sets: 4, reps: '10', cue: 'Rotational power, explosive slam, wall throw',  muscles: ['core','shoulders','fullBody'] },
+      { name: 'Burpee Complex',   sets: 3, reps: '10', cue: 'Snap down fast, explosive jump, stay tight',    muscles: ['fullBody'] },
+    ],
   },
+
+  mobility: [
+    { name: 'Hip 90/90 Flow',     duration: '8 min',  cue: 'Active rotations, do not force, breathe into tight spots', muscles: ['hipFlexors','glutes'] },
+    { name: 'Shoulder CARS',      duration: '6 min',  cue: 'Controlled articular rotation, full ROM, slow', muscles: ['shoulders'] },
+    { name: 'Full Body Flow',     duration: '12 min', cue: 'Sun sal, squat, thread needle, flow link move to move', muscles: ['fullBody'] },
+    { name: 'Splits Prep',        duration: '10 min', cue: 'PNF contract-relax, 2s hold, ease deeper', muscles: ['hipFlexors','hamstrings','glutes'] },
+    { name: 'Ankle Mobility',     duration: '6 min',  cue: 'Wall drill, banded distraction, single leg balance', muscles: ['calves'] },
+    { name: 'Thoracic Rotation',  duration: '8 min',  cue: 'Thread needle, open book, foam roller extension', muscles: ['back','shoulders'] },
+    { name: 'Deep Squat Hold',    duration: '5 min',  cue: 'Heels down, torso tall, use block to scale', muscles: ['quads','hipFlexors','calves'] },
+    { name: 'Loaded Stretching',  duration: '10 min', cue: 'Jefferson curl, pancake, couch stretch — weight adds traction', muscles: ['hamstrings','hipFlexors','lowerBack'] },
+  ],
+
+  cycling: [
+    { name: 'Endurance Ride',  duration: '45-60 min', intensity: 'Zone 2', cue: 'Conversational pace, cadence 85-90 RPM', muscles: ['quads','glutes','calves'] },
+    { name: 'Threshold Ride',  duration: '20 min',    intensity: 'Zone 4', cue: 'Barely sustainable, steady power output', muscles: ['quads','glutes','calves'] },
+    { name: 'Sprint Intervals',reps: '8×30s',         intensity: 'Max',    cue: 'All out sprint, 2min easy spin recovery', muscles: ['quads','glutes','calves','fullBody'] },
+    { name: 'Hill Climbing',   duration: '30 min',    intensity: 'Zone 3-4',cue: 'Seated and standing, consistent power',  muscles: ['quads','glutes','calves'] },
+    { name: 'Recovery Ride',   duration: '30 min',    intensity: 'Zone 1', cue: 'Very easy, promote blood flow to legs',   muscles: ['quads','calves'] },
+  ],
+
+  yoga: [
+    { name: 'Sun Salutation A',  reps: '5 rounds',  cue: 'Link breath to motion, downdog long holds', muscles: ['fullBody'] },
+    { name: 'Warrior Flow',      duration: '20 min', cue: 'Warrior 1→2→3, hold 5 breaths each',      muscles: ['hipFlexors','core','shoulders'] },
+    { name: 'Yin — Hips',        duration: '20 min', cue: 'Dragon, pigeon, frog — 2-3 min per pose', muscles: ['hipFlexors','glutes'] },
+    { name: 'Core & Balance',    duration: '15 min', cue: 'Boat, side plank, tree, warrior 3',        muscles: ['core','hipFlexors'] },
+    { name: 'Breathwork + Restore', duration: '15 min', cue: 'Box breathing, legs-up-wall, savasana', muscles: ['fullBody'] },
+  ],
+
+  hiit: [
+    { name: 'Tabata (20/10)',    reps: '8 rounds',  duration: '4 min per exercise', cue: 'All out effort, 4-5 exercises circuit', muscles: ['fullBody'] },
+    { name: 'AMRAP (15 min)',    duration: '15 min',intensity: 'Max',  cue: 'As many rounds as possible of 3-move circuit', muscles: ['fullBody'] },
+    { name: 'EMOM (20 min)',     duration: '20 min',intensity: 'High', cue: 'At top of every minute, 6-10 reps hard move', muscles: ['fullBody'] },
+    { name: 'Circuit Training',  sets: 4, reps: '45s/15s',  cue: '6-station circuit, 45s work 15s transition', muscles: ['fullBody'] },
+    { name: 'Pyramid Intervals', reps: '30/20/10s', intensity: 'Max',  cue: 'Increasing then decreasing work intervals',  muscles: ['fullBody'] },
+  ],
 };
-  }
-  const athleteModel = computeAthleteModelFromState(next);
-  const planState = buildRollingPlanForState({ ...next, athleteModel });
-  return { ...next, athleteModel, planState };
-}
-
-function appReducer(state, action) {
-  switch (action.type) {
-case 'SET_VIEW':
-  return { ...state, view: action.payload };
-case 'SET_BLOCK':
-  return {
-    ...state,
-    profile: { ...state.profile, currentBlock: action.payload },
-    planState: {
-      ...state.planState,
-      aiPlanNeedsRefresh: true,
-    },
-  };
-case 'NEXT_ONBOARD_STEP':
-  return { ...state, onboardStep: Math.min(state.onboardStep + 1, 2) };
-case 'PREV_ONBOARD_STEP':
-  return { ...state, onboardStep: Math.max(state.onboardStep - 1, 0) };
-case 'SET_PROFILE_FIELD': {
-  const { field, value } = action.payload;
-  return {
-    ...state,
-    profile: { ...state.profile, [field]: value },
-    planState: {
-      ...state.planState,
-      aiPlanNeedsRefresh: true,
-    },
-  };
-}
-case 'UPDATE_PROFILE_FIELD': {
-  const { field, subfield, value } = action.payload || {};
-  if (subfield) {
+// ─── INITIAL STATE ───────────────────────────────────────────────────────────
+function createMuscleRecovery() {
     return {
-      ...state,
-      profile: {
-        ...state.profile,
-        [field]: { ...(state.profile[field] || {}), [subfield]: value },
-      },
-      planState: {
-        ...state.planState,
-        aiPlanNeedsRefresh: true,
-      },
+        quads: { lastTrained: null, recoveryHours: 48, status: 'fresh' },
+        hamstrings: { lastTrained: null, recoveryHours: 48, status: 'fresh' },
+        glutes: { lastTrained: null, recoveryHours: 48, status: 'fresh' },
+        chest: { lastTrained: null, recoveryHours: 48, status: 'fresh' },
+        back: { lastTrained: null, recoveryHours: 60, status: 'fresh' },
+        shoulders: { lastTrained: null, recoveryHours: 36, status: 'fresh' },
+        arms: { lastTrained: null, recoveryHours: 36, status: 'fresh' },
+        core: { lastTrained: null, recoveryHours: 24, status: 'fresh' },
+        lowerBack: { lastTrained: null, recoveryHours: 72, status: 'fresh' },
+        hipFlexors: { lastTrained: null, recoveryHours: 24, status: 'fresh' },
+        calves: { lastTrained: null, recoveryHours: 24, status: 'fresh' },
+        fullBody: { lastTrained: null, recoveryHours: 48, status: 'fresh' },
     };
-  }
-  return {
-    ...state,
-    profile: { ...state.profile, [field]: value },
-    planState: {
-      ...state.planState,
-      aiPlanNeedsRefresh: true,
-    },
-  };
-}
-case 'UPDATE_AI_CONFIG': {
-  const payload = action.payload || {};
-  const mergedAI = { ...state.aiConfig, ...payload };
-  const normalizedModel = normalizeGeminiModel(mergedAI.model);
-  const normalizedPlanningModel = normalizeGeminiModel(
-    payload.planningModel !== undefined
-      ? payload.planningModel
-      : (payload.model !== undefined
-        && (state.aiConfig.planningModel === state.aiConfig.model || !state.aiConfig.planningModel)
-          ? normalizedModel
-          : (mergedAI.planningModel || normalizedModel))
-  );
-  return {
-    ...state,
-    aiConfig: {
-      ...mergedAI,
-      model: normalizedModel,
-      planningModel: normalizedPlanningModel,
-      endpoint: buildGeminiEndpoint(normalizedModel),
-    },
-  };
-}
-case 'SET_AI_COACHING': {
-  const { notes, loading, error, warning, quality, source } = action.payload || {};
-  return {
-    ...state,
-    aiConfig: {
-      ...state.aiConfig,
-      coachingNotes: notes !== undefined ? notes : state.aiConfig.coachingNotes,
-      coachingLoading: loading !== undefined ? loading : state.aiConfig.coachingLoading,
-      coachingError: error !== undefined ? error : state.aiConfig.coachingError,
-      coachingWarning: warning !== undefined ? warning : state.aiConfig.coachingWarning,
-      lastCoachQuality: quality !== undefined ? quality : state.aiConfig.lastCoachQuality,
-      lastCoachSource: source !== undefined ? source : state.aiConfig.lastCoachSource,
-    },
-  };
-}
-case 'SET_AI_QA': {
-  const { loading, error, answer, question } = action.payload || {};
-  return {
-    ...state,
-    aiConfig: {
-      ...state.aiConfig,
-      qaLoading: loading !== undefined ? loading : state.aiConfig.qaLoading,
-      qaError: error !== undefined ? error : state.aiConfig.qaError,
-      qaAnswer: answer !== undefined ? answer : state.aiConfig.qaAnswer,
-      qaQuestion: question !== undefined ? question : state.aiConfig.qaQuestion,
-    },
-  };
-}
-case 'START_DAILY_AI_INTERVIEW': {
-  const dateKey = action.payload?.dateKey || getLocalDateKey(new Date());
-  const existing = state.planState?.aiInterview;
-  const isSameDate = existing?.dateKey === dateKey;
-  const questions = Array.isArray(action.payload?.questions) && action.payload.questions.length
-    ? action.payload.questions
-    : (isSameDate && Array.isArray(existing?.questions) && existing.questions.length
-      ? existing.questions
-      : createDailyInterviewQuestions(state, dateKey));
-  return {
-    ...state,
-    planState: {
-      ...state.planState,
-      aiPlanStatus: 'interview',
-      aiPlanLastError: null,
-      aiInterview: {
-        dateKey,
-        questions,
-        answers: isSameDate ? { ...(existing?.answers || {}) } : {},
-        completedAt: null,
-      },
-    },
-  };
-}
-case 'UPDATE_AI_INTERVIEW_ANSWER': {
-  const { id, value } = action.payload || {};
-  if (!id) return state;
-  const dateKey = state.planState?.aiInterview?.dateKey || getLocalDateKey(new Date());
-  const interview = state.planState?.aiInterview || {
-    dateKey,
-    questions: createDailyInterviewQuestions(state, dateKey),
-    answers: {},
-    completedAt: null,
-  };
-  return {
-    ...state,
-    planState: {
-      ...state.planState,
-      aiInterview: {
-        ...interview,
-        answers: {
-          ...(interview.answers || {}),
-          [id]: value,
-        },
-      },
-    },
-  };
-}
-case 'SUBMIT_DAILY_AI_INTERVIEW': {
-  const dateKey = state.planState?.aiInterview?.dateKey || getLocalDateKey(new Date());
-  const existing = state.planState?.aiInterview || {
-    dateKey,
-    questions: createDailyInterviewQuestions(state, dateKey),
-    answers: {},
-  };
-  return {
-    ...state,
-    planState: {
-      ...state.planState,
-      aiPlanStatus: 'generating',
-      aiPlanNeedsRefresh: true,
-      aiPlanLastError: null,
-      aiInterview: {
-        ...existing,
-        completedAt: new Date().toISOString(),
-      },
-    },
-  };
-}
-case 'GENERATE_AI_PLAN':
-  return {
-    ...state,
-    planState: {
-      ...state.planState,
-      aiPlanStatus: 'generating',
-      aiPlanLastError: null,
-      aiPlanLastAttemptAt: new Date().toISOString(),
-    },
-  };
-case 'SET_AI_PLAN': {
-  const source = action.payload?.source || 'ai';
-  const quality = action.payload?.quality || (source === 'ai_guardrail_corrected' ? 'guardrail_fixed' : 'valid');
-  const nextPlanState = {
-    ...state.planState,
-    aiPlan: action.payload?.aiPlan || null,
-    aiPlanStatus: action.payload?.aiPlan ? 'ready' : state.planState.aiPlanStatus,
-    aiPlanLastError: null,
-    aiPlanSource: action.payload?.aiPlan ? source : state.planState.aiPlanSource,
-    aiPlanCooldownUntil: null,
-    aiPlanLastAttemptAt: state.planState?.aiPlanLastAttemptAt || new Date().toISOString(),
-    aiPlanLastFailureCode: null,
-    aiPlanLastFailureType: null,
-    aiPlanNeedsRefresh: false,
-    scheduledSlotsByDate: action.payload?.scheduledSlotsByDate || state.planState.scheduledSlotsByDate,
-  };
-  const next = {
-    ...state,
-    aiConfig: {
-      ...state.aiConfig,
-      planningLastQuality: quality,
-    },
-    planState: nextPlanState,
-  };
-  return { ...next, planState: buildRollingPlanForState(next) };
-}
-case 'SET_AI_PLAN_ERROR': {
-  const fallback = fallbackToDeterministicPlan(state, action.payload?.error || 'AI planning failed.');
-  const nowIso = new Date().toISOString();
-  const cooldownUntil = action.payload?.cooldownUntil || new Date(Date.now() + AI_PLAN_COOLDOWN_MS).toISOString();
-  const failureCodeRaw = toNum(action.payload?.status, NaN);
-  const next = {
-    ...state,
-    aiConfig: {
-      ...state.aiConfig,
-      planningLastQuality: 'fallback',
-    },
-    planState: {
-      ...state.planState,
-      aiPlanStatus: fallback.status,
-      aiPlanLastError: fallback.reason,
-      aiPlanSource: fallback.source,
-      aiPlanCooldownUntil: cooldownUntil,
-      aiPlanLastAttemptAt: action.payload?.lastAttemptAt || state.planState?.aiPlanLastAttemptAt || nowIso,
-      aiPlanLastFailureCode: Number.isFinite(failureCodeRaw) && failureCodeRaw > 0 ? failureCodeRaw : null,
-      aiPlanLastFailureType: action.payload?.failureType || 'other',
-      aiPlanNeedsRefresh: false,
-    },
-  };
-  return { ...next, planState: buildRollingPlanForState(next) };
-}
-case 'REQUEST_AI_PLAN_RETRY': {
-  const next = {
-    ...state,
-    planState: {
-      ...state.planState,
-      aiPlanStatus: 'idle',
-      aiPlanLastError: null,
-      aiPlanCooldownUntil: null,
-      aiPlanLastFailureCode: null,
-      aiPlanLastFailureType: null,
-      aiPlanNeedsRefresh: true,
-    },
-  };
-  return { ...next, planState: buildRollingPlanForState(next) };
-}
-case 'SET_WEEKLY_SUMMARY': {
-  const { summary, loading, generatedAt, cooldownUntil, lastAttemptAt, lastError } = action.payload || {};
-  return {
-    ...state,
-    planState: {
-      ...state.planState,
-      weeklySummary: summary !== undefined ? summary : state.planState.weeklySummary,
-      weeklySummaryLoading: loading !== undefined ? loading : false,
-      weeklySummaryGeneratedAt: generatedAt !== undefined ? generatedAt : state.planState.weeklySummaryGeneratedAt,
-      weeklySummaryCooldownUntil: cooldownUntil !== undefined ? cooldownUntil : state.planState.weeklySummaryCooldownUntil,
-      weeklySummaryLastAttemptAt: lastAttemptAt !== undefined ? lastAttemptAt : state.planState.weeklySummaryLastAttemptAt,
-      weeklySummaryLastError: lastError !== undefined ? lastError : state.planState.weeklySummaryLastError,
-    },
-  };
-}
-case 'SET_PROGRAM_CONFIG': {
-  const next = {
-    ...state,
-    programConfig: {
-      ...state.programConfig,
-      ...(action.payload || {}),
-      featureFlags: {
-        ...state.programConfig.featureFlags,
-        ...(action.payload?.featureFlags || {}),
-      },
-    },
-    planState: {
-      ...state.planState,
-      aiPlanNeedsRefresh: true,
-    },
-  };
-  return { ...next, planState: buildRollingPlanForState(next) };
-}
-case 'SET_DAILY_READINESS': {
-  const inputs = { ...state.readiness.inputs, ...(action.payload || {}) };
-  const scored = calculateReadiness(inputs);
-  const readiness = { ...state.readiness, inputs, ...scored, updatedAt: new Date().toISOString() };
-  const athleteModel = {
-    ...state.athleteModel,
-    readinessTrend: [...(state.athleteModel.readinessTrend || []), { x: new Date().toLocaleDateString(), score: readiness.score }].slice(-30),
-  };
-  const next = {
-    ...state,
-    readiness,
-    athleteModel,
-    planState: {
-      ...state.planState,
-      aiPlanNeedsRefresh: true,
-    },
-  };
-  return { ...next, planState: buildRollingPlanForState(next) };
-}
-case 'SET_CONSTRAINT_FLAG': {
-  const { key, value } = action.payload || {};
-  const constraints = { ...state.constraints, injuries: { ...state.constraints.injuries } };
-  if (key in constraints.injuries) constraints.injuries[key] = !!value;
-  if (key === 'timeOverrideMinutes') constraints.timeOverrideMinutes = value ? clamp(toNum(value, 60), 30, 120) : null;
-  if (key === 'equipment' && value) {
-    if (!constraints.unavailableEquipment.includes(value)) constraints.unavailableEquipment = [...constraints.unavailableEquipment, value];
-  }
-  const next = {
-    ...state,
-    constraints,
-    planState: {
-      ...state.planState,
-      aiPlanNeedsRefresh: true,
-    },
-  };
-  return { ...next, planState: buildRollingPlanForState(next) };
-}
-case 'CLEAR_CONSTRAINT_FLAG': {
-  const { key, value } = action.payload || {};
-  const constraints = { ...state.constraints, injuries: { ...state.constraints.injuries } };
-  if (key in constraints.injuries) constraints.injuries[key] = false;
-  if (key === 'timeOverrideMinutes') constraints.timeOverrideMinutes = null;
-  if (key === 'equipment' && value) constraints.unavailableEquipment = constraints.unavailableEquipment.filter(item => item !== value);
-  const next = {
-    ...state,
-    constraints,
-    planState: {
-      ...state.planState,
-      aiPlanNeedsRefresh: true,
-    },
-  };
-  return { ...next, planState: buildRollingPlanForState(next) };
-}
-case 'REBUILD_ROLLING_PLAN':
-  return { ...state, planState: buildRollingPlanForState(state) };
-case 'COMPLETE_ONBOARDING': {
-  const next = { ...state, onboarded: true, view: 'home' };
-  return { ...next, planState: buildRollingPlanForState(next) };
-}
-case 'START_SESSION':
-case 'START_SESSION_FROM_PLAN': {
-  const type = action.payload?.type || state.planState.primaryRecommendation?.type || 'gym';
-  const source = action.type === 'START_SESSION_FROM_PLAN' ? (action.payload?.source || 'plan') : 'manual';
-  const timeAvailable = action.payload?.timeAvailable || null;
-  const sessionVariant = action.payload?.sessionVariant || null;
-  const reasonOverride = action.payload?.reasonOverride || null;
-  const scheduledSlot = action.payload?.scheduledSlot || null;
-  const scheduledDate = action.payload?.scheduledDate || null;
-  const progressionIntent = action.payload?.progressionIntent || null;
-  const maSessionSubtype = action.payload?.maSessionSubtype || null;
-  const plannerSource = action.payload?.plannerSource
-    || (AI_PRIMARY_PLAN_SOURCES.has(state.planState?.aiPlanSource) ? 'ai' : 'fallback_engine');
-  const aiPlanId = action.payload?.aiPlanId || state.planState?.aiPlan?.id || null;
-  const aiRationale = action.payload?.aiRationale || null;
-  const guardrailFixes = Array.isArray(action.payload?.guardrailFixes)
-    ? action.payload.guardrailFixes
-    : (Array.isArray(state.planState?.aiPlan?.guardrailFixes) ? state.planState.aiPlan.guardrailFixes : []);
-  const activeSession = createSessionFromType(state, type, source, timeAvailable, {
-    sessionVariant,
-    reasonOverride,
-    scheduledSlot,
-    scheduledDate,
-    progressionIntent,
-    maSessionSubtype,
-    plannerSource,
-    aiPlanId,
-    aiRationale,
-    guardrailFixes,
-  });
-  return {
-    ...state,
-    currentSessionType: type,
-    currentMASubtype: activeSession.maSubtype,
-    activeSession,
-    planState: {
-      ...state.planState,
-      lastGeneratedAtByType: {
-        ...(state.planState?.lastGeneratedAtByType || {}),
-        [type === 'martialArts' ? `martialArts:${activeSession.maSubtype || 'mixed'}` : type]: activeSession.timestamp,
-      },
-    },
-    aiConfig: {
-      ...state.aiConfig,
-      coachingNotes: null,
-      coachingLoading: false,
-      coachingError: null,
-      coachingWarning: null,
-      lastCoachQuality: null,
-      lastCoachSource: null,
-      qaLoading: false,
-      qaError: null,
-      qaAnswer: '',
-      qaQuestion: '',
-    },
-  };
-}
-case 'ACCEPT_ALTERNATE_SESSION': {
-  const type = action.payload?.type;
-  if (!type) return state;
-  const decisionLog = [
-    ...(state.decisionLog || []),
-    { at: new Date().toISOString(), type: 'override_session', selected: type, recommended: state.planState.primaryRecommendation?.type || null },
-  ].slice(-120);
-  return { ...state, decisionLog };
-}
-case 'ACKNOWLEDGE_COACHING_PROMPT': {
-  const promptId = action.payload?.promptId;
-  if (!promptId) return state;
-  return {
-    ...state,
-    planState: {
-      ...state.planState,
-      acknowledgedPrompts: {
-        ...(state.planState.acknowledgedPrompts || {}),
-        [promptId]: new Date().toISOString(),
-      },
-    },
-  };
-}
-case 'LOG_EXERCISE_RESULT': {
-  if (!state.activeSession) return state;
-  const { exerciseId, patch } = action.payload || {};
-  const exerciseResults = (state.activeSession.exerciseResults || []).map(r => {
-    if (r.exerciseId !== exerciseId) return r;
-    return {
-      ...r,
-      performed: { ...r.performed, ...(patch || {}) },
-    };
-  });
-  return {
-    ...state,
-    activeSession: { ...state.activeSession, exerciseResults },
-  };
-}
-case 'SWAP_SESSION_EXERCISE': {
-  if (!state.activeSession) return state;
-  const { oldId, newEx } = action.payload || {};
-  if (!oldId || !newEx) return state;
-  const oldExercise = (state.activeSession.exercises || []).find(ex => ex.id === oldId);
-  const enriched = enrichPrescribedExercise(newEx, state, state.activeSession.prescription?.intensityTag || 'moderate');
-  const exercises = state.activeSession.exercises.map(ex => ex.id === oldId ? enriched : ex);
-  const exerciseResults = state.activeSession.exerciseResults.map(r =>
-    r.exerciseId === oldId ? createExerciseResult(enriched) : r
-  );
-  const manualEdits = [
-    ...(Array.isArray(state.activeSession.manualEdits) ? state.activeSession.manualEdits : []),
-    {
-      at: new Date().toISOString(),
-      kind: 'swap_exercise',
-      oldId,
-      oldName: oldExercise?.name || oldId,
-      newId: enriched.id,
-      newName: enriched.name,
-    },
-  ].slice(-30);
-  return { ...state, activeSession: { ...state.activeSession, exercises, exerciseResults, manualEdits } };
-}
-case 'SET_MA_SESSION_SUBTYPE': {
-  if (!state.activeSession) return state;
-  return { ...state, activeSession: { ...state.activeSession, maSessionSubtype: action.payload } };
-}
-case 'SKIP_SCHEDULED_SLOT': {
-  const { dateKey, slot } = action.payload || {};
-  if (!dateKey || !slot) return state;
-  const byDate = { ...(state.planState?.scheduledSlotsByDate || {}) };
-  const day = { ...(byDate[dateKey] || {}) };
-  const current = day[slot];
-  if (!current || current.status !== 'pending') return state;
-  const skippedAt = new Date().toISOString();
-  day[slot] = { ...current, status: 'skipped', skippedAt, updatedAt: skippedAt };
-  byDate[dateKey] = day;
-
-  let progression = state.progression;
-  if (current.type === 'martialArts') {
-    const prevMA = state.progression?.martialArts || createProgression().martialArts;
-    const adjustedReadiness = clamp(toNum(prevMA.readinessScore, 50) - 8, 0, 100);
-    const projected = {
-      ...state,
-      planState: {
-        ...state.planState,
-        scheduledSlotsByDate: byDate,
-        skipDebtScore: toNum(state.planState?.skipDebtScore, 0) + 1,
-        consecutiveSkippedSlots: toNum(state.planState?.consecutiveSkippedSlots, 0) + 1,
-      },
-      progression: {
-        ...state.progression,
-        martialArts: { ...prevMA, readinessScore: adjustedReadiness },
-      },
-    };
-    const nextPhase = computeNextMartialPhase(projected, { baseReadiness: adjustedReadiness });
-    progression = {
-      ...state.progression,
-      martialArts: {
-        ...prevMA,
-        readinessScore: nextPhase.readinessScore,
-        currentPhase: nextPhase.phaseTarget,
-        recentPhaseHistory: [
-          ...(prevMA.recentPhaseHistory || []).slice(-39),
-          { at: skippedAt, phase: 'skip', quality: 0, rpe: 0 },
-        ],
-      },
-    };
-  }
-
-  const decisionLog = [
-    ...(state.decisionLog || []),
-    { at: skippedAt, type: 'scheduled_slot_skipped', slot, dateKey, sessionType: current.type },
-  ].slice(-120);
-
-  const next = {
-    ...state,
-    progression,
-    decisionLog,
-    planState: {
-      ...state.planState,
-      scheduledSlotsByDate: byDate,
-      skipDebtScore: clamp(toNum(state.planState?.skipDebtScore, 0) + 1, 0, 30),
-      consecutiveSkippedSlots: clamp(toNum(state.planState?.consecutiveSkippedSlots, 0) + 1, 0, 30),
-      lastScheduleReplanAt: skippedAt,
-      aiPlanNeedsRefresh: true,
-    },
-  };
-  return { ...next, planState: buildRollingPlanForState(next) };
-}
-case 'CANCEL_SESSION':
-  return { ...state, activeSession: null, currentSessionType: null, currentMASubtype: null };
-case 'COMPLETE_SESSION':
-case 'COMPLETE_SESSION_V2':
-  return completeSessionInternal(state, action.payload || {});
-case 'SET_CALI_SKILL_LEVEL': {
-  const { skill, level } = action.payload;
-  const maxLevels = { pullUp:9, pushUp:7, squat:5, core:6, handstand:7 };
-  const clamped = Math.max(1, Math.min(level, maxLevels[skill] || 9));
-  return {
-    ...state,
-    domains: {
-      ...state.domains,
-      calisthenics: {
-        ...state.domains.calisthenics,
-        skills: {
-          ...state.domains.calisthenics.skills,
-          [skill]: { ...state.domains.calisthenics.skills[skill], level: clamped },
-        },
-      },
-    },
-  };
-}
-case 'SET_PR': {
-  const { lift, value } = action.payload;
-  return {
-    ...state,
-    domains: {
-      ...state.domains,
-      strength: { ...state.domains.strength, prs: { ...state.domains.strength.prs, [lift]: value } },
-    },
-  };
-}
-case 'IMPORT_STATE':
-  return migrateState(action.payload);
-default:
-  return state;
-  }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// ENGINE HELPERS
-// ─────────────────────────────────────────────────────────────────────────────
-
-function getBlockedPatterns(constraints) {
-  const blocked = [];
-  if (constraints.injuries.knee) blocked.push('lower', 'aerobic');
-  if (constraints.injuries.back) blocked.push('lower');
-  if (constraints.injuries.shoulder) blocked.push('upper', 'vertical-pull', 'inversion');
-  return [...new Set(blocked)];
+function normalizeLegacyType(type) {
+    const key = String(type || '').trim().toLowerCase();
+    return LEGACY_TYPE_MAP[key] || null;
 }
 
-function getAlternatives(ex, sessionType, maSubtype) {
-  const db = EXERCISE_DB_V5;
-  if (ex.domain === 'strength') {
-const all = [...db.strength.legs, ...db.strength.upper, ...db.strength.full];
-return all.filter(e => e.pattern === ex.pattern && e.id !== ex.id).slice(0, 4);
-  }
-  if (ex.domain === 'striking') return db.striking.filter(e => e.id !== ex.id).slice(0, 4);
-  if (ex.domain === 'grappling') return db.grappling.filter(e => e.id !== ex.id).slice(0, 4);
-  if (ex.domain === 'mobility') return db.mobility.filter(e => e.id !== ex.id).slice(0, 4);
-  if (ex.domain === 'running') return db.running.filter(e => e.id !== ex.id).slice(0, 4);
-  return [];
-}
-
-function checkCalisthenicsProgressionPrompts(sessionLogs, skills) {
-  // gym sessions now include calisthenics skill work; also accept legacy 'calisthenics' type
-  const caliLogs = (sessionLogs || []).filter(log => log.type === 'gym' || log.type === 'calisthenics');
-  if (caliLogs.length < 2) return [];
-  const recentHighQuality = caliLogs.slice(-2).every(log => (log.completionQuality || 0) >= 70);
-  if (!recentHighQuality) return [];
-  const maxLevels = { pullUp:9, pushUp:7, squat:5, core:6, handstand:7 };
-  return Object.entries(skills)
-.filter(([skill, data]) => data.level < (maxLevels[skill] || 9))
-.map(([skill, data]) => ({
-  id: `levelup_${skill}`,
-  skill,
-  currentLevel: data.level,
-  nextLevel: data.level + 1,
-  message: `${skill.toUpperCase()} ready for Level ${data.level + 1} — quality threshold hit ×2!`,
-}));
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// SVG STICK FIGURE VISUALS
-// ─────────────────────────────────────────────────────────────────────────────
-
-function StickFigure({ variant = 'athletic', size = 72 }) {
-  const C = '#ef4444';
-  const D = '#444';
-  const lw = 2;
-  const vw = 80; const vh = 100;
-
-  const Ln = ({ x1, y1, x2, y2, color = C, w = lw }) => (
-<line x1={x1} y1={y1} x2={x2} y2={y2} stroke={color} strokeWidth={w} strokeLinecap="round" />
-  );
-  const Hd = ({ cx, cy, r = 7 }) => (
-<circle cx={cx} cy={cy} r={r} stroke={C} strokeWidth={lw} fill="none" />
-  );
-  const Bar = ({ x1, y1, x2, y2 }) => (
-<>
-  <Ln x1={x1} y1={y1} x2={x2} y2={y2} color="#888" w={3} />
-  <circle cx={x1} cy={y1} r={5} stroke="#888" strokeWidth={1.5} fill="none" />
-  <circle cx={x2} cy={y2} r={5} stroke="#888" strokeWidth={1.5} fill="none" />
-</>
-  );
-
-  const figures = {
-squat: (
-  <>
-    <Bar x1={4} y1={22} x2={76} y2={22} />
-    <Hd cx={40} cy={10} />
-    <Ln x1={40} y1={18} x2={40} y2={30} />
-    {/* shoulders */}
-    <Ln x1={28} y1={30} x2={52} y2={30} />
-    {/* torso forward lean */}
-    <Ln x1={40} y1={30} x2={36} y2={56} />
-    {/* arms forward */}
-    <Ln x1={28} y1={30} x2={10} y2={42} />
-    <Ln x1={52} y1={30} x2={70} y2={42} />
-    {/* hips */}
-    <Ln x1={26} y1={56} x2={50} y2={56} />
-    {/* L thigh + shin */}
-    <Ln x1={26} y1={56} x2={8} y2={80} />
-    <Ln x1={8} y1={80} x2={12} y2={98} />
-    {/* R thigh + shin */}
-    <Ln x1={50} y1={56} x2={68} y2={80} />
-    <Ln x1={68} y1={80} x2={64} y2={98} />
-  </>
-),
-
-deadlift: (
-  <>
-    <Hd cx={18} cy={22} />
-    {/* torso horizontal */}
-    <Ln x1={18} y1={30} x2={60} y2={48} />
-    {/* neck */}
-    <Ln x1={18} y1={22} x2={18} y2={30} />
-    {/* arms down to bar */}
-    <Ln x1={28} y1={34} x2={32} y2={65} />
-    <Ln x1={52} y1={44} x2={55} y2={65} />
-    {/* barbell on floor */}
-    <Bar x1={16} y1={68} x2={68} y2={68} />
-    {/* L leg */}
-    <Ln x1={60} y1={48} x2={52} y2={78} />
-    <Ln x1={52} y1={78} x2={44} y2={96} />
-    {/* R leg */}
-    <Ln x1={60} y1={48} x2={70} y2={78} />
-    <Ln x1={70} y1={78} x2={74} y2={96} />
-  </>
-),
-
-bench: (
-  <>
-    {/* bench */}
-    <Ln x1={5} y1={72} x2={75} y2={72} color={D} />
-    <Hd cx={10} cy={50} r={7} />
-    {/* torso horizontal */}
-    <Ln x1={18} y1={50} x2={65} y2={50} />
-    {/* arms up pressing */}
-    <Ln x1={32} y1={50} x2={30} y2={25} />
-    <Ln x1={52} y1={50} x2={54} y2={25} />
-    <Bar x1={18} y1={23} x2={66} y2={23} />
-    {/* legs bent */}
-    <Ln x1={65} y1={50} x2={68} y2={70} />
-    <Ln x1={68} y1={70} x2={64} y2={90} />
-    <Ln x1={65} y1={50} x2={72} y2={68} />
-    <Ln x1={72} y1={68} x2={76} y2={88} />
-  </>
-),
-
-ohp: (
-  <>
-    <Bar x1={20} y1={8} x2={60} y2={8} />
-    <Hd cx={40} cy={18} />
-    <Ln x1={40} y1={26} x2={40} y2={58} />
-    {/* shoulders */}
-    <Ln x1={28} y1={34} x2={52} y2={34} />
-    {/* arms up */}
-    <Ln x1={28} y1={34} x2={24} y2={16} />
-    <Ln x1={52} y1={34} x2={56} y2={16} />
-    {/* hips + legs */}
-    <Ln x1={32} y1={58} x2={48} y2={58} />
-    <Ln x1={36} y1={58} x2={30} y2={80} />
-    <Ln x1={30} y1={80} x2={26} y2={98} />
-    <Ln x1={44} y1={58} x2={50} y2={80} />
-    <Ln x1={50} y1={80} x2={54} y2={98} />
-  </>
-),
-
-pullup: (
-  <>
-    {/* bar */}
-    <Ln x1={5} y1={6} x2={75} y2={6} color={D} w={3} />
-    <Hd cx={40} cy={24} />
-    {/* arms up */}
-    <Ln x1={40} y1={24} x2={24} y2={10} />
-    <Ln x1={40} y1={24} x2={56} y2={10} />
-    {/* torso */}
-    <Ln x1={40} y1={32} x2={40} y2={64} />
-    {/* shoulders */}
-    <Ln x1={28} y1={36} x2={52} y2={36} />
-    {/* legs hanging */}
-    <Ln x1={36} y1={64} x2={32} y2={84} />
-    <Ln x1={32} y1={84} x2={30} y2={98} />
-    <Ln x1={44} y1={64} x2={48} y2={84} />
-    <Ln x1={48} y1={84} x2={50} y2={98} />
-  </>
-),
-
-pushup: (
-  <>
-    {/* floor */}
-    <Ln x1={0} y1={82} x2={80} y2={82} color={D} />
-    <Hd cx={7} cy={52} />
-    {/* torso prone */}
-    <Ln x1={14} y1={52} x2={64} y2={58} />
-    {/* arms supporting */}
-    <Ln x1={22} y1={52} x2={22} y2={80} />
-    <Ln x1={50} y1={56} x2={50} y2={80} />
-    {/* legs extended */}
-    <Ln x1={64} y1={58} x2={70} y2={68} />
-    <Ln x1={70} y1={68} x2={72} y2={80} />
-    <Ln x1={64} y1={58} x2={74} y2={63} />
-    <Ln x1={74} y1={63} x2={78} y2={78} />
-  </>
-),
-
-run: (
-  <>
-    <Hd cx={46} cy={10} />
-    {/* torso slight forward */}
-    <Ln x1={46} y1={18} x2={44} y2={50} />
-    {/* shoulders */}
-    <Ln x1={32} y1={26} x2={56} y2={26} />
-    {/* L arm back */}
-    <Ln x1={32} y1={26} x2={18} y2={42} />
-    {/* R arm forward */}
-    <Ln x1={56} y1={26} x2={66} y2={14} />
-    {/* hips */}
-    <Ln x1={36} y1={50} x2={52} y2={50} />
-    {/* L leg forward */}
-    <Ln x1={40} y1={50} x2={28} y2={72} />
-    <Ln x1={28} y1={72} x2={20} y2={96} />
-    {/* R leg back/up */}
-    <Ln x1={48} y1={50} x2={64} y2={68} />
-    <Ln x1={64} y1={68} x2={72} y2={52} />
-  </>
-),
-
-strike: (
-  <>
-    <Hd cx={36} cy={10} />
-    {/* torso side-on slight lean */}
-    <Ln x1={36} y1={18} x2={38} y2={55} />
-    {/* shoulders */}
-    <Ln x1={26} y1={28} x2={48} y2={28} />
-    {/* L guard arm (rear) */}
-    <Ln x1={26} y1={28} x2={22} y2={18} />
-    <Ln x1={22} y1={18} x2={30} y2={14} />
-    {/* R jab arm (extended) */}
-    <Ln x1={48} y1={28} x2={70} y2={20} />
-    {/* hips */}
-    <Ln x1={30} y1={55} x2={48} y2={55} />
-    {/* L leg front stance */}
-    <Ln x1={32} y1={55} x2={24} y2={78} />
-    <Ln x1={24} y1={78} x2={22} y2={96} />
-    {/* R leg back stance */}
-    <Ln x1={46} y1={55} x2={58} y2={75} />
-    <Ln x1={58} y1={75} x2={62} y2={96} />
-  </>
-),
-
-grapple: (
-  <>
-    <Hd cx={28} cy={20} />
-    {/* torso hunched forward */}
-    <Ln x1={28} y1={28} x2={56} y2={44} />
-    {/* shoulders */}
-    <Ln x1={18} y1={32} x2={40} y2={32} />
-    {/* L arm reaching */}
-    <Ln x1={18} y1={32} x2={8} y2={48} />
-    <Ln x1={8} y1={48} x2={6} y2={62} />
-    {/* R arm up/across */}
-    <Ln x1={40} y1={32} x2={62} y2={22} />
-    <Ln x1={62} y1={22} x2={70} y2={12} />
-    {/* L leg */}
-    <Ln x1={56} y1={44} x2={46} y2={70} />
-    <Ln x1={46} y1={70} x2={40} y2={94} />
-    {/* R leg wide */}
-    <Ln x1={56} y1={44} x2={68} y2={68} />
-    <Ln x1={68} y1={68} x2={72} y2={92} />
-  </>
-),
-
-handstand: (
-  <>
-    {/* floor at bottom */}
-    <Ln x1={5} y1={97} x2={75} y2={97} color={D} />
-    {/* arms down to floor */}
-    <Ln x1={40} y1={72} x2={26} y2={95} />
-    <Ln x1={40} y1={72} x2={54} y2={95} />
-    {/* torso inverted */}
-    <Ln x1={40} y1={72} x2={40} y2={38} />
-    {/* shoulders */}
-    <Ln x1={28} y1={68} x2={52} y2={68} />
-    {/* legs up */}
-    <Ln x1={36} y1={38} x2={30} y2={14} />
-    <Ln x1={30} y1={14} x2={28} y2={4} />
-    <Ln x1={44} y1={38} x2={50} y2={14} />
-    <Ln x1={50} y1={14} x2={52} y2={4} />
-    {/* head inverted */}
-    <Hd cx={40} cy={84} r={7} />
-  </>
-),
-
-plank: (
-  <>
-    {/* floor */}
-    <Ln x1={0} y1={78} x2={80} y2={78} color={D} />
-    <Hd cx={7} cy={58} />
-    {/* torso rigid horizontal */}
-    <Ln x1={14} y1={58} x2={66} y2={58} />
-    {/* forearms on floor */}
-    <Ln x1={24} y1={58} x2={22} y2={76} />
-    <Ln x1={50} y1={58} x2={48} y2={76} />
-    {/* legs */}
-    <Ln x1={66} y1={58} x2={68} y2={76} />
-    <Ln x1={66} y1={58} x2={72} y2={74} />
-  </>
-),
-
-mobility: (
-  <>
-    <Hd cx={22} cy={36} />
-    {/* torso folded forward over legs */}
-    <Ln x1={22} y1={44} x2={58} y2={48} />
-    {/* extended leg along floor */}
-    <Ln x1={58} y1={48} x2={76} y2={52} />
-    {/* bent leg behind (pigeon) */}
-    <Ln x1={58} y1={48} x2={44} y2={66} />
-    <Ln x1={44} y1={66} x2={32} y2={78} />
-    {/* arms reaching forward */}
-    <Ln x1={28} y1={44} x2={52} y2={52} />
-    <Ln x1={52} y1={52} x2={70} y2={56} />
-    {/* floor */}
-    <Ln x1={0} y1={86} x2={80} y2={86} color={D} />
-  </>
-),
-
-athletic: (
-  <>
-    <Hd cx={40} cy={9} />
-    <Ln x1={40} y1={17} x2={40} y2={55} />
-    {/* shoulders */}
-    <Ln x1={24} y1={30} x2={56} y2={30} />
-    {/* arms bent out (athletic ready) */}
-    <Ln x1={24} y1={30} x2={14} y2={46} />
-    <Ln x1={14} y1={46} x2={18} y2={58} />
-    <Ln x1={56} y1={30} x2={66} y2={46} />
-    <Ln x1={66} y1={46} x2={62} y2={58} />
-    {/* hips */}
-    <Ln x1={32} y1={55} x2={48} y2={55} />
-    {/* legs slightly apart */}
-    <Ln x1={36} y1={55} x2={30} y2={76} />
-    <Ln x1={30} y1={76} x2={26} y2={96} />
-    <Ln x1={44} y1={55} x2={50} y2={76} />
-    <Ln x1={50} y1={76} x2={54} y2={96} />
-  </>
-),
-  };
-
-  return (
-<svg
-  width={size}
-  height={size * 1.25}
-  viewBox={`0 0 ${vw} ${vh}`}
-  className="flex-shrink-0"
-  style={{ filter: 'drop-shadow(0 0 4px rgba(239,68,68,0.3))' }}
->
-  {figures[variant] || figures.athletic}
-</svg>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ROUND TIMER
-// ─────────────────────────────────────────────────────────────────────────────
-
-function RoundTimer({ workSeconds = 180, restSeconds = 60 }) {
-  const [phase, setPhase] = useState('idle');
-  const [remaining, setRemaining] = useState(workSeconds);
-  const [round, setRound] = useState(1);
-
-  useEffect(() => {
-if (phase === 'idle') return;
-if (remaining <= 0) {
-  if (phase === 'work') { setPhase('rest'); setRemaining(restSeconds); }
-  else { setRound(r => r + 1); setPhase('work'); setRemaining(workSeconds); }
-  return;
-}
-const t = setTimeout(() => setRemaining(r => r - 1), 1000);
-return () => clearTimeout(t);
-  }, [phase, remaining, workSeconds, restSeconds]);
-
-  const mins = String(Math.floor(remaining / 60)).padStart(2, '0');
-  const secs = String(remaining % 60).padStart(2, '0');
-
-  return (
-<div className={`border p-3 space-y-2 mt-2 ${phase === 'work' ? 'border-red-500' : phase === 'rest' ? 'border-green-600' : 'border-neutral-800'}`}>
-  <div className="flex items-center justify-between">
-    <div className="font-mono text-xs text-neutral-500 uppercase">ROUND {round}</div>
-    <div className={`font-mono text-xs uppercase font-bold ${phase === 'work' ? 'text-red-500' : phase === 'rest' ? 'text-green-400' : 'text-neutral-600'}`}>
-      {phase === 'idle' ? 'READY' : phase === 'work' ? '⚡ WORK' : '💤 REST'}
-    </div>
-  </div>
-  <div className="font-mono text-3xl text-center text-neutral-100 tracking-widest">{mins}:{secs}</div>
-  <div className="flex gap-2">
-    {phase === 'idle' ? (
-      <button
-        onClick={() => { setPhase('work'); setRemaining(workSeconds); setRound(1); }}
-        className="flex-1 bg-red-500 text-neutral-950 py-2 font-mono text-xs uppercase font-bold active:bg-red-700"
-        style={{ WebkitTapHighlightColor: 'transparent' }}
-      >
-        START TIMER
-      </button>
-    ) : (
-      <>
-        <button
-          onClick={() => { setPhase('idle'); setRemaining(workSeconds); setRound(1); }}
-          className="flex-1 border border-neutral-700 py-2 font-mono text-xs uppercase text-neutral-500 active:bg-neutral-900"
-        >
-          STOP
-        </button>
-        <button
-          onClick={() => { setPhase('work'); setRemaining(workSeconds); }}
-          className="flex-1 border border-neutral-700 py-2 font-mono text-xs uppercase text-neutral-500 active:bg-neutral-900"
-        >
-          RESET
-        </button>
-      </>
-    )}
-  </div>
-  <div className="text-neutral-700 font-mono text-xs text-center">{workSeconds / 60}:00 WORK · {restSeconds}s REST</div>
-</div>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// HOME VIEW
-// ─────────────────────────────────────────────────────────────────────────────
-
-function HomeView({ state, dispatch }) {
-  const [microBreakMinutes, setMicroBreakMinutes] = useState(2);
-  const [qaInput, setQaInput] = useState('');
-  const balance = useMemo(() => getSessionBalance(state.sessionLogs), [state.sessionLogs]);
-  const priorityList = useMemo(() => getPriorityTypes(balance, state), [balance, state]);
-  const recentLogs = useMemo(() => [...state.sessionLogs].reverse().slice(0, 3), [state.sessionLogs]);
-  const todayDateKey = getLocalDateKey(new Date());
-  const planningEnabled = isAIPlanningEnabled(state);
-  const aiPlanStatus = state.planState?.aiPlanStatus || 'idle';
-  const aiPlanSource = state.planState?.aiPlanSource || 'fallback_engine';
-  const planSourceLabel = getPlanSourceDisplayLabel(aiPlanSource);
-  const interviewRequired = (state.programConfig?.aiInterviewMode || 'daily_required') === 'daily_required';
-  const interview = state.planState?.aiInterview || null;
-  const interviewForToday = interview?.dateKey === todayDateKey ? interview : null;
-  const interviewCompletedToday = interviewRequired ? !!interviewForToday?.completedAt : true;
-  const aiPlanGeneratedAtMs = state.planState?.aiPlan?.generatedAt
-? Date.parse(state.planState.aiPlan.generatedAt)
-: NaN;
-  const aiPlanFresh = Number.isFinite(aiPlanGeneratedAtMs)
-&& (Date.now() - aiPlanGeneratedAtMs) <= (AI_PLAN_FRESHNESS_HOURS * 60 * 60 * 1000);
-  const aiPlanHasToday = !!(state.planState?.aiPlan?.days || []).find(day => day?.date === todayDateKey);
-  const aiPlanCooldownUntilMs = state.planState?.aiPlanCooldownUntil
-? Date.parse(state.planState.aiPlanCooldownUntil)
-: NaN;
-  const aiPlanInCooldown = Number.isFinite(aiPlanCooldownUntilMs) && Date.now() < aiPlanCooldownUntilMs;
-  const aiPlanCooldownMinutes = aiPlanInCooldown
-? Math.max(1, Math.ceil((aiPlanCooldownUntilMs - Date.now()) / 60000))
-: 0;
-  const aiPlanNeedsRefresh = !!state.planState?.aiPlanNeedsRefresh || !aiPlanFresh || !aiPlanHasToday;
-  const todaySlots = state.planState?.scheduledSlotsByDate?.[todayDateKey] || {};
-  const martialNextPhase = state.planState?.martialArtsNextPhase || state.progression?.martialArts?.currentPhase || 'technical';
-  const weekdayScheduleActive = (state.programConfig?.scheduleMode || 'weekday_fixed') === 'weekday_fixed' && isWeekdayDate(new Date());
-  const weeklySummaryCooldownUntilMs = state.planState.weeklySummaryCooldownUntil
-? Date.parse(state.planState.weeklySummaryCooldownUntil)
-: NaN;
-  const weeklySummaryInCooldown = Number.isFinite(weeklySummaryCooldownUntilMs) && Date.now() < weeklySummaryCooldownUntilMs;
-  const weeklySummaryCooldownMinutes = weeklySummaryInCooldown
-? Math.max(1, Math.ceil((weeklySummaryCooldownUntilMs - Date.now()) / 60000))
-: 0;
-  const primary = state.planState.primaryRecommendation || priorityList[0];
-  const secondary = state.planState.secondaryRecommendation || priorityList[1];
-  const startMicroBreak = () => {
-const reasonOverride = `MICRO BREAK (${microBreakMinutes} MIN): quick desk reset for posture, mobility, and recovery.`;
-dispatch({
-  type: 'START_SESSION_FROM_PLAN',
-  payload: {
-    type: 'mobility',
-    source: 'micro-break',
-    timeAvailable: microBreakMinutes,
-    sessionVariant: 'micro-break',
-    reasonOverride,
-  },
-});
-dispatch({ type: 'SET_VIEW', payload: 'train' });
-  };
-  const startScheduledSlot = (slotKey) => {
-const slot = todaySlots?.[slotKey];
-if (!slot || slot.status !== 'pending') return;
-dispatch({
-  type: 'START_SESSION_FROM_PLAN',
-  payload: {
-    type: slot.type,
-    source: 'scheduled-slot',
-    timeAvailable: state.programConfig?.defaultSessionMinutes || 60,
-    scheduledSlot: slotKey,
-    scheduledDate: todayDateKey,
-    progressionIntent: slot.progressionIntent || null,
-    reasonOverride: slot.strictPrompt || `Scheduled ${slotKey} session.`,
-    maSessionSubtype: slot.progressionIntent?.phaseTarget || null,
-    plannerSource: slot.source === 'ai_plan' ? 'ai' : 'fallback_engine',
-    aiPlanId: slot.aiPlanId || state.planState?.aiPlan?.id || null,
-    aiRationale: slot.aiRationale || null,
-    guardrailFixes: Array.isArray(state.planState?.aiPlan?.guardrailFixes) ? state.planState.aiPlan.guardrailFixes : [],
-  },
-});
-dispatch({ type: 'SET_VIEW', payload: 'train' });
-  };
-  const skipScheduledSlot = (slotKey) => {
-dispatch({ type: 'SKIP_SCHEDULED_SLOT', payload: { dateKey: todayDateKey, slot: slotKey } });
-  };
-  const askCoachFromHome = () => {
-if (!state.aiConfig?.enabled || !state.aiConfig?.apiKey) {
-  dispatch({
-    type: 'SET_AI_QA',
-    payload: { loading: false, error: 'Enable AI coach and add API key to ask questions.', answer: '' },
-  });
-  return;
-}
-const question = qaInput.trim();
-if (!question) return;
-dispatch({
-  type: 'SET_AI_QA',
-  payload: { loading: true, error: null, answer: '', question },
-});
-const context = {
-  sessionType: state.planState?.primaryRecommendation?.type || 'gym',
-  martialPhase: martialNextPhase,
-  readinessScore: state.readiness?.score,
-  readinessBand: state.readiness?.band,
-  skipDebtScore: state.planState?.skipDebtScore || 0,
-  timeAvailable: state.programConfig?.defaultSessionMinutes || 60,
-};
-callGeminiExerciseQA(state.aiConfig.apiKey, state.aiConfig.endpoint, question, context, [])
-  .then((answer) => {
-    dispatch({
-      type: 'SET_AI_QA',
-      payload: { loading: false, error: null, answer },
-    });
-  })
-  .catch((err) => {
-    dispatch({
-      type: 'SET_AI_QA',
-      payload: { loading: false, error: err?.message || 'AI Q&A failed.', answer: '' },
-    });
-  });
-  };
-  const retryAIPlanNow = () => {
-dispatch({ type: 'REQUEST_AI_PLAN_RETRY' });
-  };
-
-  const submitDailyInterview = () => {
-const questions = interviewForToday?.questions || [];
-const answers = interviewForToday?.answers || {};
-const hasAnyAnswer = questions.some(q => String(answers?.[q.id] || '').trim().length > 0);
-if (!hasAnyAnswer) return;
-dispatch({ type: 'SUBMIT_DAILY_AI_INTERVIEW' });
-  };
-
-  useEffect(() => {
-if (!state.onboarded || !planningEnabled) return;
-if (!state.aiConfig?.apiKey) return;
-if (!interviewRequired) return;
-if (interviewCompletedToday) return;
-if (aiPlanStatus === 'interview' && interviewForToday) return;
-dispatch({
-  type: 'START_DAILY_AI_INTERVIEW',
-  payload: { dateKey: todayDateKey, questions: createDailyInterviewQuestions(state, todayDateKey) },
-});
-  }, [state.onboarded, planningEnabled, interviewRequired, todayDateKey, interviewCompletedToday, aiPlanStatus]);
-
-  useEffect(() => {
-if (!state.onboarded || !planningEnabled) return;
-if (!state.aiConfig?.apiKey) return;
-if (!interviewCompletedToday) return;
-if (!aiPlanNeedsRefresh) return;
-if (aiPlanInCooldown) return;
-if (aiPlanStatus === 'generating') return;
-
-dispatch({ type: 'GENERATE_AI_PLAN' });
-const goals = {
-  primaryGoalType: state.profile?.primaryGoalType,
-  secondaryGoals: state.profile?.secondaryGoals,
-  timelineWeeks: state.profile?.timelineWeeks,
-  priorityDomains: state.profile?.priorityDomains,
-  goalNotes: state.profile?.goalNotes,
-  mustAvoidTags: state.profile?.mustAvoidTags,
-};
-const interviewAnswers = interviewForToday?.answers || {};
-callGeminiPlanningWithRetry({
-  apiKey: state.aiConfig.apiKey,
-  model: state.aiConfig?.planningModel || state.aiConfig?.model,
-  state,
-  goals,
-  interviewAnswers,
-}).then(({ parsed }) => {
-  const validated = validateAIPlanSchema(parsed, state);
-  const guarded = applyPlanningGuardrails(validated, state);
-  const aiPlan = {
-    ...guarded.plan,
-    id: guarded.plan.id || `ai_plan_${Date.now()}`,
-    generatedAt: new Date().toISOString(),
-    guardrailFixes: guarded.guardrailFixes,
-  };
-  const scheduledSlotsByDate = mapAIPlanToScheduledSlots(aiPlan, {
-    ...state,
-    planState: {
-      ...state.planState,
-      aiPlan,
-      aiPlanSource: guarded.source,
-    },
-  });
-  dispatch({
-    type: 'SET_AI_PLAN',
-    payload: {
-      aiPlan,
-      source: guarded.source,
-      quality: guarded.source === 'ai_guardrail_corrected' ? 'guardrail_fixed' : 'valid',
-      scheduledSlotsByDate,
-    },
-  });
-}).catch((err) => {
-  const status = Number(err?.status || 0);
-  const failureType = err?.isTimeout
-    ? 'timeout'
-    : err?.isGeminiParseError
-      ? 'parse'
-      : status === 429
-        ? 'rate_limit'
-        : (err instanceof TypeError || err?.name === 'TypeError')
-          ? 'network'
-          : 'other';
-  const message = status === 429 || status === 503
-    ? `AI planning is temporarily unavailable (${status}). Fallback plan is active.`
-    : (err?.message || 'AI planning failed. Fallback plan is active.');
-  dispatch({
-    type: 'SET_AI_PLAN_ERROR',
-    payload: {
-      error: message,
-      status,
-      failureType,
-      lastAttemptAt: new Date().toISOString(),
-    },
-  });
-});
-  }, [
-state.onboarded,
-planningEnabled,
-state.aiConfig?.apiKey,
-state.aiConfig?.planningModel,
-state.aiConfig?.model,
-interviewCompletedToday,
-aiPlanNeedsRefresh,
-aiPlanInCooldown,
-aiPlanStatus,
-state.planState?.skipDebtScore,
-state.planState?.consecutiveSkippedSlots,
-state.profile?.sessionCount,
-  ]);
-
-  // Weekly summary: generate when AI is enabled + week has rolled over or no summary exists
-  useEffect(() => {
-if (!state.aiConfig?.enabled || !state.aiConfig?.apiKey) return;
-if (state.planState.weeklySummaryLoading) return;
-const cooldownUntilMs = state.planState.weeklySummaryCooldownUntil
-  ? Date.parse(state.planState.weeklySummaryCooldownUntil)
-  : NaN;
-if (Number.isFinite(cooldownUntilMs) && Date.now() < cooldownUntilMs) return;
-const weekStart = getWeekStart(new Date()).toISOString().slice(0, 10);
-const generatedAt = state.planState.weeklySummaryGeneratedAt;
-const alreadyThisWeek = generatedAt && generatedAt >= weekStart;
-if (alreadyThisWeek) return;
-const weekLogs = (state.sessionLogs || []).filter(l => {
-  const ws = getWeekStart(new Date()).getTime();
-  return new Date(l.timestamp).getTime() >= ws;
-});
-if (weekLogs.length < 2) return; // need at least 2 sessions to summarise
-dispatch({
-  type: 'SET_WEEKLY_SUMMARY',
-  payload: { loading: true, lastAttemptAt: new Date().toISOString(), lastError: null },
-});
-const weekEnd = new Date().toISOString().slice(0, 10);
-const sessionSummaries = weekLogs.map(l =>
-  `- ${l.type}${l.maSubtype ? ' (' + l.maSubtype + ')' : ''}: RPE ${l.rpe}, Quality ${l.completionQuality || '?'}%`
-).join('\n');
-const outcomes = weekLogs.flatMap(l => (l.exerciseResults || []).map(r => r.outcome));
-const advanced = outcomes.filter(o => o === 'advance').length;
-const regressed = outcomes.filter(o => o === 'regress').length;
-const avgRPE = weekLogs.length ? (weekLogs.reduce((s, l) => s + (l.rpe || 7), 0) / weekLogs.length).toFixed(1) : '?';
-const avgReadiness = weekLogs.length ? Math.round(weekLogs.reduce((s, l) => s + (l.readinessSnapshot?.score || 70), 0) / weekLogs.length) : 70;
-const stalledNames = (state.progression.stalledItems || []).slice(-3).map(i => i.id.replace(/_/g, ' ')).join(', ') || 'none';
-const weekContext = {
-  name: state.profile.name || 'Athlete',
-  age: state.profile.age || '?',
-  bodyweight: state.profile.bodyweight || '?',
-  weekStart, weekEnd,
-  primaryGoal: state.profile.primaryGoal || 'complete athlete',
-  currentBlock: state.profile.currentBlock,
-  sessionCount: weekLogs.length,
-  sessionSummaries,
-  adaptationSummary: `${advanced} advances, ${regressed} regressions`,
-  progressionNotes: `Stalled items: ${stalledNames}`,
-  avgReadiness,
-  avgRPE,
-};
-callGeminiWeeklySummary(state.aiConfig.apiKey, state.aiConfig.endpoint, weekContext)
-  .then(summary => {
-    dispatch({
-      type: 'SET_WEEKLY_SUMMARY',
-      payload: {
-        summary,
-        loading: false,
-        generatedAt: weekEnd,
-        cooldownUntil: null,
-        lastError: null,
-      },
-    });
-  })
-  .catch((err) => {
-    const status = Number(err?.status || 0);
-    if (status === 429) {
-      dispatch({
-        type: 'SET_WEEKLY_SUMMARY',
-        payload: {
-          loading: false,
-          cooldownUntil: new Date(Date.now() + WEEKLY_SUMMARY_COOLDOWN_MS).toISOString(),
-          lastError: err.message || 'Rate limit hit while generating weekly summary.',
-        },
-      });
-      return;
+function parseTimestamp(input) {
+    if (typeof input === 'number' && Number.isFinite(input)) return input;
+    if (typeof input === 'string') {
+        const ts = Date.parse(input);
+        if (!Number.isNaN(ts)) return ts;
     }
-    dispatch({
-      type: 'SET_WEEKLY_SUMMARY',
-      payload: { loading: false, lastError: err?.message || 'Weekly summary failed.' },
+    return Date.now();
+}
+
+function mapLegacySessionLog(log, idx) {
+    if (!log || typeof log !== 'object') return null;
+    const type = normalizeLegacyType(log.type || log.sessionType || log.category);
+    if (!type) return null;
+    const timestamp = parseTimestamp(log.timestamp || log.ts || log.date || log.startedAt);
+    const rawExercises = Array.isArray(log.exerciseResults) ? log.exerciseResults : (Array.isArray(log.exercises) ? log.exercises : []);
+    return {
+        id: log.id || `legacy-${idx}-${timestamp}`,
+        type,
+        maSubtype: log.maSubtype || (log.striking ? 'striking' : null),
+        timestamp,
+        duration: Number.isFinite(log.duration) ? log.duration : 0,
+        overallRPE: Number.isFinite(log.overallRPE) ? log.overallRPE : (Number.isFinite(log.rpe) ? log.rpe : 7),
+        recovery: Number.isFinite(log.recovery) ? log.recovery : 7,
+        energyRating: Number.isFinite(log.energyRating) ? log.energyRating : (Number.isFinite(log.energy) ? log.energy : 7),
+        notes: log.notes || '',
+        bodyweight: Number.isFinite(log.bodyweight) ? log.bodyweight : null,
+        exerciseResults: rawExercises.map((ex) => ({
+            name: ex.name || 'Exercise',
+            done: !!ex.done,
+            setsCompleted: Number.isFinite(ex.setsCompleted) ? ex.setsCompleted : 0,
+            topMetric: ex.topMetric || '',
+            effortRPE: Number.isFinite(ex.effortRPE) ? ex.effortRPE : null,
+            pain: !!ex.pain,
+        })),
+    };
+}
+
+function inferDisciplines(profileDisciplines, sessionLogs) {
+    const fromProfile = Array.isArray(profileDisciplines) ? profileDisciplines.map(normalizeLegacyType).filter(Boolean) : [];
+    const fromLogs = Array.from(new Set((sessionLogs || []).map((l) => normalizeLegacyType(l.type)).filter(Boolean)));
+    const combined = Array.from(new Set([...fromProfile, ...fromLogs])).filter((d) => d && d !== 'custom');
+    return combined.length ? combined : ['gym', 'mobility'];
+}
+
+function buildDomainScoresFromLogs(sessionLogs, disciplines) {
+    const scores = {};
+    disciplines.forEach((d) => {
+        scores[d] = { sessions: 0, level: 1, trend: [] };
     });
-  });
-  }, [
-state.sessionLogs.length,
-state.aiConfig?.enabled,
-state.aiConfig?.apiKey,
-state.aiConfig?.model,
-state.planState.weeklySummaryGeneratedAt,
-state.planState.weeklySummaryCooldownUntil,
-  ]);
-
-  return (
-<div className="space-y-6">
-  {state.progression.deloadRecommended === true && state.profile.currentBlock !== 'deload' && (
-    <div className="bg-red-950 border border-red-500 text-red-400 font-mono p-3 mb-4">
-      <div className="text-xs">⚠ DELOAD RECOMMENDED — your last 3 sessions hit RPE 8+. Recovery debt is high.</div>
-      <button
-        onClick={() => dispatch({ type: 'SET_BLOCK', payload: 'deload' })}
-        className="border border-red-500 text-red-400 px-3 py-1 font-mono text-xs mt-2"
-        style={{ WebkitTapHighlightColor: 'transparent' }}
-      >
-        SWITCH TO DELOAD
-      </button>
-    </div>
-  )}
-  {state.onboarded && planningEnabled && !!state.aiConfig?.apiKey && interviewRequired && interviewForToday && !interviewCompletedToday && (
-    <div className="border border-yellow-700 bg-yellow-950/20 p-4 space-y-3">
-      <div className="text-yellow-400 font-mono text-xs uppercase tracking-widest font-bold">DAILY AI INTERVIEW (REQUIRED)</div>
-      <div className="text-neutral-400 font-mono text-xs">
-        Complete this once daily so AI can generate your refreshed {clamp(toNum(state.programConfig?.aiPlanHorizonDays, 7), 3, 7)}-day plan.
-      </div>
-      {(interviewForToday.questions || []).map((q) => (
-        <div key={q.id} className="space-y-1">
-          <div className="text-neutral-500 font-mono text-xs uppercase">{q.label}</div>
-          <div className="text-neutral-400 font-mono text-xs">{q.prompt}</div>
-          <textarea
-            value={interviewForToday?.answers?.[q.id] || ''}
-            onChange={(e) => dispatch({ type: 'UPDATE_AI_INTERVIEW_ANSWER', payload: { id: q.id, value: e.target.value } })}
-            placeholder={q.placeholder || ''}
-            rows={2}
-            className="w-full bg-neutral-900 border border-neutral-700 p-2 text-neutral-100 font-mono text-xs resize-none"
-          />
-        </div>
-      ))}
-      <button
-        onClick={submitDailyInterview}
-        className="w-full border border-yellow-500 py-2 font-mono text-xs uppercase text-yellow-400 font-bold active:bg-neutral-900"
-        style={{ WebkitTapHighlightColor: 'transparent' }}
-      >
-        SUBMIT INTERVIEW
-      </button>
-    </div>
-  )}
-  {state.onboarded && planningEnabled && (
-    <div className="border border-neutral-800 p-3 space-y-1">
-      <div className="flex items-center justify-between">
-        <div className="text-neutral-400 font-mono text-xs uppercase">Planner Source</div>
-        <div className={`font-mono text-xs uppercase ${AI_PRIMARY_PLAN_SOURCES.has(aiPlanSource) ? 'text-green-400' : 'text-orange-400'}`}>{planSourceLabel}</div>
-      </div>
-      {aiPlanStatus === 'generating' && (
-        <div className="text-neutral-500 font-mono text-xs animate-pulse">Generating AI plan...</div>
-      )}
-      {aiPlanInCooldown && (
-        <div className="text-neutral-500 font-mono text-xs">
-          Planner cooldown active after failure. Auto retry resumes in ~{aiPlanCooldownMinutes}m.
-        </div>
-      )}
-      {state.planState?.aiPlanLastError && (
-        <div className="text-orange-400 font-mono text-xs">{state.planState.aiPlanLastError}</div>
-      )}
-      {(aiPlanInCooldown || aiPlanStatus === 'fallback') && (
-        <button
-          onClick={retryAIPlanNow}
-          className="mt-2 w-full border border-yellow-600 py-2 font-mono text-xs uppercase text-yellow-500 font-bold active:bg-neutral-900"
-          style={{ WebkitTapHighlightColor: 'transparent' }}
-        >
-          RETRY AI PLAN NOW
-        </button>
-      )}
-    </div>
-  )}
-  <div className="border border-neutral-800 p-5">
-    <div className="text-red-500 font-mono text-xl uppercase tracking-widest font-bold">MIYAMOTO</div>
-    <div className="text-neutral-500 font-mono text-xs mt-1">V5 PERSONAL TRAINER ENGINE</div>
-    {state.onboarded && (
-      <div className="mt-3 flex gap-6 text-neutral-400 font-mono text-xs">
-        <div>ATHLETE: <span className="text-neutral-100">{state.profile.name || '—'}</span></div>
-        <div>READINESS: <span className={`${state.readiness.score >= 75 ? 'text-green-400' : state.readiness.score >= 50 ? 'text-yellow-400' : 'text-red-500'}`}>{state.readiness.score}</span></div>
-        <div>CONFIDENCE: <span className="text-neutral-100">{Math.round(state.athleteModel.adaptationConfidence * 100)}%</span></div>
-      </div>
-    )}
-  </div>
-
-  {state.onboarded && (state.planState.progressionPrompts || []).length > 0 && (
-    <div className="border border-yellow-600 p-4 space-y-2">
-      <div className="text-yellow-500 font-mono text-xs uppercase tracking-widest">⬆ LEVEL UP READY</div>
-      {state.planState.progressionPrompts.map(p => (
-        <div key={p.id} className="flex items-center justify-between gap-2">
-          <div className="text-neutral-300 font-mono text-xs">{p.message}</div>
-          <button
-            onClick={() => { dispatch({ type: 'SET_CALI_SKILL_LEVEL', payload: { skill: p.skill, level: p.nextLevel } }); dispatch({ type: 'ACKNOWLEDGE_COACHING_PROMPT', payload: { promptId: p.id } }); }}
-            className="bg-yellow-600 text-neutral-950 px-3 py-1 font-mono text-xs uppercase font-bold flex-shrink-0 active:bg-yellow-700"
-            style={{ WebkitTapHighlightColor: 'transparent' }}
-          >
-            LEVEL UP
-          </button>
-        </div>
-      ))}
-    </div>
-  )}
-
-  {/* Weekly AI Summary Card */}
-  {state.onboarded && state.aiConfig?.enabled && (
-    <div className="border border-neutral-700 bg-neutral-900 p-4 space-y-2">
-      <div className="flex items-center justify-between">
-        <div className="text-yellow-400 font-mono text-xs font-bold uppercase tracking-widest">⚡ WEEKLY RECAP</div>
-        {state.planState.weeklySummaryGeneratedAt && (
-          <div className="text-neutral-600 font-mono text-xs">{state.planState.weeklySummaryGeneratedAt}</div>
-        )}
-      </div>
-      {state.planState.weeklySummaryLoading && (
-        <div className="text-neutral-400 font-mono text-xs animate-pulse">Generating weekly summary...</div>
-      )}
-      {!state.planState.weeklySummaryLoading && state.planState.weeklySummaryLastError && (
-        <div className="text-orange-400 font-mono text-xs">{state.planState.weeklySummaryLastError}</div>
-      )}
-      {!state.planState.weeklySummaryLoading && weeklySummaryInCooldown && (
-        <div className="text-neutral-500 font-mono text-xs">
-          Auto-summary cooling down after throttling. Next attempt in ~{weeklySummaryCooldownMinutes}m.
-        </div>
-      )}
-      {!state.planState.weeklySummaryLoading && !state.planState.weeklySummary && (
-        <div className="text-neutral-600 font-mono text-xs">Complete 2+ sessions this week to generate a recap.</div>
-      )}
-      {state.planState.weeklySummary && !state.planState.weeklySummaryLoading && (() => {
-        const s = state.planState.weeklySummary;
-        return (
-          <div className="space-y-2">
-            {s.headline && <div className="text-neutral-100 font-mono text-xs font-bold">{s.headline}</div>}
-            {s.wins?.length > 0 && (
-              <div>
-                <div className="text-green-400 font-mono text-xs uppercase mb-1">WINS</div>
-                {s.wins.map((w, i) => <div key={i} className="text-neutral-300 font-mono text-xs">✓ {w}</div>)}
-              </div>
-            )}
-            {s.concerns?.length > 0 && (
-              <div>
-                <div className="text-orange-400 font-mono text-xs uppercase mb-1">WATCH</div>
-                {s.concerns.map((c, i) => <div key={i} className="text-neutral-400 font-mono text-xs">⚠ {c}</div>)}
-              </div>
-            )}
-            {s.nextWeekFocus && (
-              <div className="border-t border-neutral-800 pt-2">
-                <div className="text-red-400 font-mono text-xs uppercase mb-1">NEXT WEEK</div>
-                <div className="text-neutral-300 font-mono text-xs">{s.nextWeekFocus}</div>
-              </div>
-            )}
-            {s.recommendation && (
-              <div className="text-neutral-500 font-mono text-xs italic">→ {s.recommendation}</div>
-            )}
-          </div>
-        );
-      })()}
-    </div>
-  )}
-
-  {state.onboarded && (
-    <>
-      <div className="border border-neutral-800 p-5 space-y-4">
-        <div className="text-red-500 font-mono text-xs uppercase tracking-widest">READINESS CHECK (20s)</div>
-        {[
-          { key:'sleep', label:'Sleep quality' },
-          { key:'stress', label:'Stress' },
-          { key:'soreness', label:'Soreness' },
-          { key:'motivation', label:'Motivation' },
-        ].map(({ key, label }) => (
-          <div key={key} className="space-y-1">
-            <div className="flex justify-between">
-              <span className="text-neutral-500 font-mono text-xs uppercase">{label}</span>
-              <span className="text-neutral-200 font-mono text-xs">{state.readiness.inputs[key]}/10</span>
-            </div>
-            <input
-              type="range"
-              min="1"
-              max="10"
-              value={state.readiness.inputs[key]}
-              onChange={e => dispatch({ type: 'SET_DAILY_READINESS', payload: { [key]: Number(e.target.value) } })}
-              className="w-full accent-red-500"
-            />
-          </div>
-        ))}
-        <div className="grid grid-cols-2 gap-2">
-          <input
-            type="number"
-            value={state.readiness.inputs.hrvDelta}
-            onChange={e => dispatch({ type: 'SET_DAILY_READINESS', payload: { hrvDelta: e.target.value } })}
-            placeholder="HRV Δ (optional)"
-            className="bg-neutral-900 border border-neutral-800 px-3 py-2 text-neutral-100 font-mono text-base"
-          />
-          <input
-            type="number"
-            value={state.readiness.inputs.restingHrDelta}
-            onChange={e => dispatch({ type: 'SET_DAILY_READINESS', payload: { restingHrDelta: e.target.value } })}
-            placeholder="RHR Δ (optional)"
-            className="bg-neutral-900 border border-neutral-800 px-3 py-2 text-neutral-100 font-mono text-base"
-          />
-        </div>
-      </div>
-
-      {/* Muscle Recovery */}
-      {(() => {
-        const advice = getMuscleRecoveryAdvice(state.muscleRecovery);
-        const fatigued = advice.fatiguedMuscles;
-        const recovering = advice.recoveringMuscles;
-        if (fatigued.length === 0 && recovering.length === 0) return null;
-        return (
-          <div className="p-3 border border-neutral-800 bg-neutral-950">
-            <div className="text-neutral-400 font-mono text-xs uppercase mb-2">Muscle Recovery</div>
-            {fatigued.length > 0 && (
-              <div className="text-red-400 font-mono text-xs mb-1">
-                🔴 Fatigued: {fatigued.map(m => m.replace(/([A-Z])/g, ' $1').toLowerCase()).join(', ')}
-              </div>
-            )}
-            {recovering.length > 0 && (
-              <div className="text-yellow-400 font-mono text-xs">
-                🟡 Recovering: {recovering.map(m => m.replace(/([A-Z])/g, ' $1').toLowerCase()).join(', ')}
-              </div>
-            )}
-          </div>
-        );
-      })()}
-
-      <div className="border border-neutral-800 p-5 space-y-3">
-        <div className="text-red-500 font-mono text-xs uppercase tracking-widest">TODAY'S PRESCRIPTION</div>
-        {state.onboarded && (
-          <div className={`font-mono text-[10px] uppercase ${AI_PRIMARY_PLAN_SOURCES.has(aiPlanSource) ? 'text-green-400' : 'text-orange-400'}`}>
-            {planSourceLabel}
-          </div>
-        )}
-        <div className="text-neutral-400 font-mono text-xs">{state.planState.reasonText}</div>
-        <div className="grid grid-cols-2 gap-3">
-          <div
-            className="border border-red-500 p-4 space-y-1 cursor-pointer active:bg-neutral-900"
-            onClick={() => dispatch({ type: 'SET_VIEW', payload: 'train' })}
-            style={{ WebkitTapHighlightColor: 'transparent' }}
-          >
-            <div className="flex items-center gap-1">
-              <Zap size={10} className="text-red-500" />
-              <span className="text-red-500 font-mono text-xs uppercase">PRIMARY</span>
-            </div>
-            <div className="text-neutral-100 font-mono text-sm font-bold">
-              {primary ? `${FREQUENCY_TARGETS[primary.type].icon} ${FREQUENCY_TARGETS[primary.type].label}` : '—'}
-            </div>
-            <div className="text-neutral-500 font-mono text-xs">{primary ? `${primary.done}/${primary.target} this wk` : ''}</div>
-          </div>
-          <div
-            className="border border-neutral-700 p-4 space-y-1 cursor-pointer active:bg-neutral-900"
-            onClick={() => dispatch({ type: 'SET_VIEW', payload: 'train' })}
-            style={{ WebkitTapHighlightColor: 'transparent' }}
-          >
-            <div className="text-neutral-500 font-mono text-xs uppercase">ALTERNATE</div>
-            <div className="text-neutral-100 font-mono text-sm font-bold">
-              {secondary ? `${FREQUENCY_TARGETS[secondary.type].icon} ${FREQUENCY_TARGETS[secondary.type].label}` : '—'}
-            </div>
-            <div className="text-neutral-500 font-mono text-xs">{secondary ? `${secondary.done}/${secondary.target} this wk` : ''}</div>
-          </div>
-        </div>
-        <div className="border-l-2 border-neutral-700 pl-3 space-y-1">
-          <div className="text-neutral-400 font-mono text-xs">FOCUS: {state.planState.weeklyFocus}</div>
-          <div className="text-neutral-600 font-mono text-xs">WATCHOUT: {state.planState.watchout}</div>
-          <div className="text-neutral-500 font-mono text-xs">MARTIAL NEXT: {String(martialNextPhase).toUpperCase()} {state.planState?.martialArtsNextRationale ? `· ${state.planState.martialArtsNextRationale}` : ''}</div>
-        </div>
-      </div>
-
-      <div className="border border-neutral-800 p-5 space-y-3">
-        <div className="text-red-500 font-mono text-xs uppercase tracking-widest">WEEKLY BALANCE</div>
-        {priorityList.map(({ type, done, target, deficit, score }) => {
-          const t = FREQUENCY_TARGETS[type];
-          const pct = Math.min(100, (done / target) * 100);
-          const overdue = deficit > 0;
-          return (
-            <div key={type} className="space-y-1">
-              <div className="flex justify-between items-center">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs">{t.icon}</span>
-                  <span className={`font-mono text-xs ${t.color}`}>{t.label}</span>
-                  {overdue && deficit >= target && (
-                    <span className="text-red-500 font-mono text-xs">⚡ OVERDUE</span>
-                  )}
-                </div>
-                <span className="text-neutral-400 font-mono text-xs">{done}/{target} · P{Math.round(score)}</span>
-              </div>
-              <div className="w-full bg-neutral-900 h-1.5 border border-neutral-800">
-                <div
-                  className={`h-full transition-all ${done >= target ? 'bg-green-500' : 'bg-red-500'}`}
-                  style={{ width: `${pct}%` }}
-                />
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      <div className="border border-neutral-800 p-5 space-y-3">
-        <div className="text-red-500 font-mono text-xs uppercase tracking-widest">SCHEDULED SLOTS (WEEKDAYS)</div>
-        {!weekdayScheduleActive && (
-          <div className="text-neutral-600 font-mono text-xs">Weekend mode: start sessions manually when ready.</div>
-        )}
-        {weekdayScheduleActive && ['morning', 'evening'].map((slotKey) => {
-          const slot = todaySlots?.[slotKey];
-          if (!slot) {
-            return (
-              <div key={slotKey} className="text-neutral-600 font-mono text-xs">
-                {slotKey.toUpperCase()}: not generated yet.
-              </div>
-            );
-          }
-          const typeInfo = FREQUENCY_TARGETS[slot.type];
-          const phaseTag = slot.progressionIntent?.phaseTarget ? ` · ${String(slot.progressionIntent.phaseTarget).toUpperCase()}` : '';
-          const status = slot.status || 'pending';
-          const statusColor = status === 'completed' ? 'text-green-400' : status === 'skipped' ? 'text-red-500' : 'text-yellow-400';
-          return (
-            <div key={slotKey} className="border border-neutral-800 p-3 space-y-2">
-              <div className="flex items-center justify-between">
-                <div className="text-neutral-300 font-mono text-xs uppercase">
-                  {slotKey.toUpperCase()} {slot.scheduledTime ? `(${slot.scheduledTime})` : ''}
-                </div>
-                <div className={`font-mono text-xs uppercase ${statusColor}`}>{status}</div>
-              </div>
-              <div className="text-neutral-100 font-mono text-xs font-bold">
-                {typeInfo ? `${typeInfo.icon} ${typeInfo.label}` : slot.type}{phaseTag}
-              </div>
-              {slot.status === 'pending' && (
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => startScheduledSlot(slotKey)}
-                    className="flex-1 border border-red-500 py-2 font-mono text-xs uppercase text-red-500 font-bold active:bg-neutral-900"
-                    style={{ WebkitTapHighlightColor: 'transparent' }}
-                  >
-                    START
-                  </button>
-                  <button
-                    onClick={() => skipScheduledSlot(slotKey)}
-                    className="flex-1 border border-neutral-700 py-2 font-mono text-xs uppercase text-neutral-400 active:bg-neutral-900"
-                    style={{ WebkitTapHighlightColor: 'transparent' }}
-                  >
-                    SKIP
-                  </button>
-                </div>
-              )}
-              {slot.status === 'skipped' && (
-                <div className="text-red-500 font-mono text-xs">
-                  Skipped slots add accountability debt and slow progression.
-                </div>
-              )}
-              {slot.status === 'completed' && slot.completedAt && (
-                <div className="text-green-500 font-mono text-xs">
-                  Completed: {new Date(slot.completedAt).toLocaleTimeString()}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-
-      <div className="border border-neutral-800 p-5 space-y-3">
-        <div className="text-red-500 font-mono text-xs uppercase tracking-widest">ASK AI COACH</div>
-        <div className="text-neutral-500 font-mono text-xs">
-          Ask exercise/form/progression questions. Martial next phase: {String(martialNextPhase).toUpperCase()}.
-        </div>
-        <textarea
-          value={qaInput}
-          onChange={(e) => setQaInput(e.target.value)}
-          placeholder="Example: For tonight's martial slot, what should I focus on technically?"
-          className="w-full bg-neutral-900 border border-neutral-800 p-3 text-neutral-100 font-mono text-sm resize-none"
-          rows={3}
-        />
-        <button
-          onClick={askCoachFromHome}
-          disabled={state.aiConfig?.qaLoading || !qaInput.trim()}
-          className="w-full border border-red-500 py-3 font-mono text-xs uppercase text-red-500 font-bold disabled:opacity-40 active:bg-neutral-900"
-          style={{ WebkitTapHighlightColor: 'transparent' }}
-        >
-          {state.aiConfig?.qaLoading ? 'ASKING AI...' : 'ASK COACH'}
-        </button>
-        {state.aiConfig?.qaError && (
-          <div className="text-red-400 font-mono text-xs">{state.aiConfig.qaError}</div>
-        )}
-        {state.aiConfig?.qaAnswer && !state.aiConfig?.qaLoading && (
-          <div className="border-l-2 border-yellow-500 pl-3 text-neutral-200 font-mono text-xs whitespace-pre-wrap">
-            {state.aiConfig.qaAnswer}
-          </div>
-        )}
-      </div>
-
-      <div className="border border-neutral-800 p-5 space-y-3">
-        <div className="text-red-500 font-mono text-xs uppercase tracking-widest">COOL-OFF (2-5 MIN)</div>
-        <div className="text-neutral-500 font-mono text-xs">Quick desk-reset mobility flow between work blocks.</div>
-        <div className="flex gap-2">
-          {[2, 3, 5].map(minutes => (
-            <button
-              key={minutes}
-              onClick={() => setMicroBreakMinutes(minutes)}
-              className={`flex-1 py-2 font-mono text-xs border ${
-                microBreakMinutes === minutes ? 'border-red-500 text-red-500' : 'border-neutral-700 text-neutral-400'
-              }`}
-              style={{ WebkitTapHighlightColor: 'transparent' }}
-            >
-              {minutes}m
-            </button>
-          ))}
-        </div>
-        <button
-          onClick={startMicroBreak}
-          className="w-full border border-red-500 py-3 font-mono text-xs uppercase text-red-500 font-bold active:bg-neutral-900"
-          style={{ WebkitTapHighlightColor: 'transparent' }}
-        >
-          START MICRO BREAK
-        </button>
-      </div>
-
-      <button
-        onClick={() => dispatch({ type: 'SET_VIEW', payload: 'train' })}
-        className="w-full bg-red-500 text-neutral-950 py-5 font-mono font-bold text-sm uppercase tracking-widest active:bg-red-700"
-        style={{ WebkitTapHighlightColor: 'transparent' }}
-      >
-        START TRAINING →
-      </button>
-
-      {recentLogs.length > 0 && (
-        <div className="border border-neutral-800 p-5 space-y-3">
-          <div className="text-red-500 font-mono text-xs uppercase tracking-widest">RECENT SESSIONS</div>
-          {recentLogs.map((log, i) => (
-            <div key={i} className="flex justify-between items-start border-l-2 border-neutral-700 pl-3">
-              <div>
-                <div className="text-neutral-200 font-mono text-xs uppercase font-bold">
-                  {log.type === 'mobility' && (log.prescription?.sessionVariant === 'micro-break' || log.prescription?.source === 'micro-break')
-                    ? 'MOBILITY • MICRO BREAK'
-                    : log.type}
-                </div>
-                {log.maSubtype && <div className="text-neutral-500 font-mono text-xs">{log.maSubtype}</div>}
-              </div>
-              <div className="text-right">
-                <div className="text-neutral-400 font-mono text-xs">RPE {log.rpe} · RCV {log.recovery}</div>
-                <div className="text-neutral-600 font-mono text-xs">Q {log.completionQuality || '--'}</div>
-                <div className="text-neutral-600 font-mono text-xs">{new Date(log.timestamp).toLocaleDateString()}</div>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </>
-  )}
-</div>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// TRAIN VIEW
-// ─────────────────────────────────────────────────────────────────────────────
-
-const MA_SESSION_SUBTYPES = [
-  { value: 'technical', label: 'TECHNICAL', desc: 'Drilling & technique focus' },
-  { value: 'conditioning', label: 'CONDITIONING', desc: 'High-volume, cardio-heavy' },
-  { value: 'sparring', label: 'SPARRING / LIVE', desc: 'Live rounds, competition prep' },
-];
-
-function TrainView({ state, dispatch }) {
-  const [cancelConfirm, setCancelConfirm] = useState(false);
-  const [showOverrides, setShowOverrides] = useState(false);
-  const [pendingMAType, setPendingMAType] = useState(null); // for sparring subtype picker
-  const [maSessionSubtype, setMaSessionSubtype] = useState('technical');
-  const [qaInput, setQaInput] = useState('');
-  const days = ['sun','mon','tue','wed','thu','fri','sat'];
-  const todayKey = days[new Date().getDay()];
-  const defaultTime = state.profile.timeByDay?.[todayKey] || 60;
-  const [timeAvailable, setTimeAvailable] = useState(defaultTime);
-  const martialNext = computeNextMartialPhase(state);
-  const balance = useMemo(() => getSessionBalance(state.sessionLogs), [state.sessionLogs]);
-  const priorityList = useMemo(() => getPriorityTypes(balance, state), [balance, state]);
-  const plannerSource = AI_PRIMARY_PLAN_SOURCES.has(state.planState?.aiPlanSource) ? 'ai' : 'fallback_engine';
-  const recommendedTypes = useMemo(() => {
-const p = state.planState.primaryRecommendation?.type;
-const s = state.planState.secondaryRecommendation?.type;
-return [p, s].filter(Boolean);
-  }, [state.planState.primaryRecommendation, state.planState.secondaryRecommendation]);
-
-  const startSession = (type, source) => {
-if (type === 'martialArts') {
-  const suggestedPhase = computeNextMartialPhase(state);
-  setMaSessionSubtype(suggestedPhase.phaseTarget);
-  setPendingMAType({
-    type,
-    source,
-    progressionIntent: { domain: 'martialArts', phaseTarget: suggestedPhase.phaseTarget },
-    rationale: suggestedPhase.rationale,
-  });
-} else {
-  dispatch({
-    type: 'START_SESSION_FROM_PLAN',
-    payload: {
-      type,
-      source,
-      timeAvailable,
-      plannerSource,
-      aiPlanId: state.planState?.aiPlan?.id || null,
-      aiRationale: state.planState?.reasonText || null,
-      guardrailFixes: Array.isArray(state.planState?.aiPlan?.guardrailFixes) ? state.planState.aiPlan.guardrailFixes : [],
-    },
-  });
-}
-  };
-
-  const confirmMASession = () => {
-dispatch({
-  type: 'START_SESSION_FROM_PLAN',
-  payload: {
-    type: pendingMAType.type,
-    source: pendingMAType.source,
-    timeAvailable,
-    progressionIntent: pendingMAType.progressionIntent || { domain: 'martialArts', phaseTarget: maSessionSubtype },
-    maSessionSubtype,
-    reasonOverride: `Martial progression target: ${String(maSessionSubtype).toUpperCase()}. Stay accountable and complete the session.`,
-    plannerSource,
-    aiPlanId: state.planState?.aiPlan?.id || null,
-    aiRationale: pendingMAType?.rationale || null,
-    guardrailFixes: Array.isArray(state.planState?.aiPlan?.guardrailFixes) ? state.planState.aiPlan.guardrailFixes : [],
-  },
-});
-setPendingMAType(null);
-  };
-
-  const askCoachFromTrain = () => {
-if (!state.aiConfig?.enabled || !state.aiConfig?.apiKey) {
-  dispatch({ type: 'SET_AI_QA', payload: { loading: false, error: 'Enable AI coach and add API key in Settings.', answer: '' } });
-  return;
-}
-const question = qaInput.trim();
-if (!question) return;
-dispatch({ type: 'SET_AI_QA', payload: { loading: true, error: null, answer: '', question } });
-const context = {
-  sessionType: state.currentSessionType || 'gym',
-  martialPhase: state.activeSession?.maSessionSubtype || martialNext.phaseTarget,
-  readinessScore: state.readiness?.score,
-  readinessBand: state.readiness?.band,
-  skipDebtScore: state.planState?.skipDebtScore || 0,
-  timeAvailable: state.activeSession?.prescription?.timeFit || timeAvailable,
-  scheduledSlot: state.activeSession?.prescription?.scheduledSlot || null,
-  scheduledDate: state.activeSession?.prescription?.scheduledDate || null,
-};
-callGeminiExerciseQA(
-  state.aiConfig.apiKey,
-  state.aiConfig.endpoint,
-  question,
-  context,
-  state.activeSession?.exercises || []
-).then((answer) => {
-  dispatch({ type: 'SET_AI_QA', payload: { loading: false, error: null, answer } });
-}).catch((err) => {
-  dispatch({ type: 'SET_AI_QA', payload: { loading: false, error: err?.message || 'AI Q&A failed.', answer: '' } });
-});
-  };
-
-  // AI Coaching trigger
-  useEffect(() => {
-if (!state.activeSession || !state.aiConfig.enabled || !state.aiConfig.apiKey) return;
-if (state.aiConfig.coachingLoading || state.aiConfig.coachingNotes) return;
-dispatch({ type: 'SET_AI_COACHING', payload: { loading: true, error: null, warning: null, quality: null, source: null } });
-const userContext = {
-  name: state.profile.name || 'Athlete',
-  age: state.profile.age || '?',
-  bodyweight: state.profile.bodyweight || '?',
-  currentBlock: state.profile.currentBlock,
-  targetRPE: { accumulation:7, intensification:8, realization:9, deload:5 }[state.profile.currentBlock] || 7,
-  readinessScore: state.readiness.score,
-  readinessBand: state.readiness.band,
-  sleep: state.readiness.inputs.sleep,
-  stress: state.readiness.inputs.stress,
-  primaryGoal: state.profile.primaryGoal || 'complete athlete',
-  sessionType: state.currentSessionType,
-  timeAvailable: state.activeSession?.prescription?.timeFit || 60,
-  scheduledSlot: state.activeSession?.prescription?.scheduledSlot || null,
-  scheduledDate: state.activeSession?.prescription?.scheduledDate || null,
-  skipDebtScore: state.planState?.skipDebtScore || 0,
-  martialPhase: state.activeSession?.maSessionSubtype || martialNext.phaseTarget,
-  fatiguedMuscles: getMuscleRecoveryAdvice(state.muscleRecovery).fatiguedMuscles,
-  recentSessions: (state.sessionLogs || []).slice(-3).map(l => `${l.type} RPE${l.rpe}`).join(', ') || 'none',
-  injuries: Object.entries(state.constraints?.injuries || {}).filter(([,v]) => v).map(([k]) => k).join(', ') || 'none',
-  pullUpLevel: state.domains.calisthenics.skills.pullUp?.level || 1,
-  handstandLevel: state.domains.calisthenics.skills.handstand?.level || 1,
-  squatLevel: state.domains.calisthenics.skills.squat?.level || 1,
-};
-callGeminiAPI(
-  state.aiConfig.apiKey,
-  state.aiConfig.endpoint,
-  state.aiConfig.model,
-  userContext,
-  state.activeSession.exercises || []
-).then(result => {
-  dispatch({
-    type: 'SET_AI_COACHING',
-    payload: {
-      notes: result?.notes || null,
-      loading: false,
-      error: null,
-      warning: result?.warning || null,
-      quality: result?.quality || 'complete',
-      source: result?.source || 'primary',
-    },
-  });
-}).catch(err => {
-  if (err?.isGeminiParseError) {
-    const fallbackNotes = buildFallbackCoachingNotes(state.activeSession.exercises || [], userContext);
-    const warning = err?.failureType === 'blocked_or_empty'
-      ? 'AI returned empty/blocked payload on all attempts. Showing safe fallback cues for this session.'
-      : 'AI returned malformed JSON on all attempts. Showing safe fallback cues for this session.';
-    dispatch({
-      type: 'SET_AI_COACHING',
-      payload: {
-        notes: fallbackNotes,
-        loading: false,
-        error: null,
-        warning,
-        quality: 'invalid_json',
-        source: 'synthetic_fill',
-      },
+    (sessionLogs || []).forEach((log) => {
+        if (!scores[log.type]) return;
+        scores[log.type].sessions += 1;
+        scores[log.type].trend = [...scores[log.type].trend.slice(-19), Number.isFinite(log.overallRPE) ? log.overallRPE : 7];
     });
-    return;
-  }
-  dispatch({
-    type: 'SET_AI_COACHING',
-    payload: { error: err.message, loading: false, warning: null, quality: null, source: null },
-  });
-});
-  }, [state.activeSession?.id]);
-
-
-  if (!state.activeSession) {
-// Sparring subtype picker overlay
-if (pendingMAType) {
-  return (
-    <div className="space-y-4">
-      <div className="border border-neutral-800 p-4">
-        <button onClick={() => setPendingMAType(null)} className="flex items-center gap-2 text-neutral-500 font-mono text-xs uppercase mb-3">
-          <ArrowLeft size={14} /> BACK
-        </button>
-        <div className="text-red-500 font-mono text-lg uppercase tracking-widest font-bold">MARTIAL ARTS SESSION TYPE</div>
-        <div className="text-neutral-500 font-mono text-xs mt-1">{state.currentMASubtype ? `— ${state.currentMASubtype.toUpperCase()}` : ''}</div>
-        <div className="text-neutral-400 font-mono text-xs mt-2">
-          Next progression target: {String(pendingMAType?.progressionIntent?.phaseTarget || martialNext.phaseTarget).toUpperCase()}
-        </div>
-        {pendingMAType?.rationale && (
-          <div className="text-neutral-600 font-mono text-xs mt-1">{pendingMAType.rationale}</div>
-        )}
-      </div>
-      <div className="space-y-2">
-        {MA_SESSION_SUBTYPES.map(opt => (
-          <button
-            key={opt.value}
-            onClick={() => setMaSessionSubtype(opt.value)}
-            className={`w-full p-4 text-left border font-mono active:opacity-70 ${maSessionSubtype === opt.value ? 'border-red-500 bg-neutral-900' : 'border-neutral-800'}`}
-            style={{ WebkitTapHighlightColor: 'transparent' }}
-          >
-            <div className="flex items-center gap-2">
-              <div className={`w-2 h-2 rounded-full flex-shrink-0 ${maSessionSubtype === opt.value ? 'bg-red-500' : 'bg-neutral-700'}`} />
-              <span className={`text-sm uppercase font-bold ${maSessionSubtype === opt.value ? 'text-neutral-100' : 'text-neutral-400'}`}>{opt.label}</span>
-              {(pendingMAType?.progressionIntent?.phaseTarget === opt.value) && (
-                <span className="border border-yellow-600 text-yellow-500 font-mono text-[10px] px-1.5 py-0.5 uppercase">RECOMMENDED</span>
-              )}
-            </div>
-            <div className="text-neutral-600 text-xs mt-1 pl-4">{opt.desc}</div>
-          </button>
-        ))}
-      </div>
-      <button
-        onClick={confirmMASession}
-        className="w-full bg-red-500 text-neutral-950 py-5 font-mono font-bold text-sm uppercase tracking-widest active:bg-red-700"
-        style={{ WebkitTapHighlightColor: 'transparent' }}
-      >
-        START SESSION →
-      </button>
-    </div>
-  );
+    return scores;
 }
 
-return (
-  <div className="space-y-4">
-    <div className="border border-neutral-800 p-4">
-      <div className="text-red-500 font-mono text-lg uppercase tracking-widest font-bold">COACHED SESSION PICKER</div>
-      <div className="text-neutral-500 font-mono text-xs mt-1">{state.planState.reasonText}</div>
-      <div className="text-neutral-400 font-mono text-xs mt-2">
-        Martial next focus: {String(martialNext.phaseTarget).toUpperCase()} · {martialNext.rationale}
-      </div>
-    </div>
-
-    {/* Time picker */}
-    <div className="mb-4">
-      <div className="text-neutral-400 font-mono text-xs uppercase mb-2">Time Available</div>
-      <div className="flex gap-2">
-        {[30, 45, 60, 75, 90].map(t => (
-          <button
-            key={t}
-            onClick={() => setTimeAvailable(t)}
-            className={`flex-1 py-2 font-mono text-xs border ${timeAvailable === t ? 'border-red-500 text-red-500' : 'border-neutral-700 text-neutral-400'}`}
-            style={{ WebkitTapHighlightColor: 'transparent' }}
-          >{t}m</button>
-        ))}
-      </div>
-    </div>
-
-    {state.planState.primaryRecommendation && (
-      <div className="grid grid-cols-2 gap-2">
-        <button
-          onClick={() => startSession(state.planState.primaryRecommendation.type, 'primary')}
-          className="border-2 border-red-500 p-4 text-left active:bg-neutral-900"
-        >
-          <div className="text-red-500 font-mono text-xs uppercase">Primary</div>
-          <div className="text-neutral-100 font-mono text-sm font-bold">
-            {FREQUENCY_TARGETS[state.planState.primaryRecommendation.type].icon} {FREQUENCY_TARGETS[state.planState.primaryRecommendation.type].label}
-          </div>
-        </button>
-        {state.planState.secondaryRecommendation && (
-          <button
-            onClick={() => startSession(state.planState.secondaryRecommendation.type, 'secondary')}
-            className="border border-neutral-700 p-4 text-left active:bg-neutral-900"
-          >
-            <div className="text-neutral-500 font-mono text-xs uppercase">Alternate</div>
-            <div className="text-neutral-100 font-mono text-sm font-bold">
-              {FREQUENCY_TARGETS[state.planState.secondaryRecommendation.type].icon} {FREQUENCY_TARGETS[state.planState.secondaryRecommendation.type].label}
-            </div>
-          </button>
-        )}
-      </div>
-    )}
-
-    <button
-      onClick={() => setShowOverrides(v => !v)}
-      className="w-full border border-neutral-800 py-3 font-mono text-xs uppercase text-neutral-500 hover:text-neutral-300"
-    >
-      {showOverrides ? 'HIDE MANUAL OVERRIDES' : 'SHOW MANUAL OVERRIDES'}
-    </button>
-
-    <div className="space-y-3">
-      {(showOverrides ? priorityList : priorityList.filter(item => recommendedTypes.includes(item.type))).map(({ type, done, target, deficit }, rank) => {
-        const t = FREQUENCY_TARGETS[type];
-        const isPriority = state.planState.primaryRecommendation?.type === type;
-        const isMet = done >= target;
-        return (
-          <button
-            key={type}
-            onClick={() => {
-              if (state.planState.primaryRecommendation?.type !== type) {
-                dispatch({ type: 'ACCEPT_ALTERNATE_SESSION', payload: { type } });
-              }
-              startSession(type, 'manual-override');
-            }}
-            className={`w-full p-5 text-left flex items-center gap-4 active:opacity-70 ${
-              isPriority
-                ? 'border-2 border-red-500 bg-neutral-900'
-                : 'border border-neutral-800'
-            }`}
-          style={{ WebkitTapHighlightColor: 'transparent', minHeight: 80 }}
-          >
-            {/* Icon */}
-            <div className="text-3xl w-10 text-center flex-shrink-0">{t.icon}</div>
-
-            {/* Info */}
-            <div className="flex-1 space-y-1">
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className={`font-mono text-sm uppercase tracking-widest font-bold ${t.color}`}>{t.label}</span>
-                {isPriority && (
-                  <span className="bg-red-500 text-neutral-950 font-mono text-xs px-2 py-0.5 uppercase font-bold flex items-center gap-1">
-                    <Zap size={9} /> COACH PICK
-                  </span>
-                )}
-                {isMet && (
-                  <span className="border border-green-600 text-green-500 font-mono text-xs px-2 py-0.5 uppercase">✓ MET</span>
-                )}
-              </div>
-              <div className="flex items-center gap-3">
-                <div className="flex-1 bg-neutral-900 h-1 border border-neutral-800">
-                  <div
-                    className={`h-full ${isMet ? 'bg-green-500' : 'bg-red-500'}`}
-                    style={{ width: `${Math.min(100, (done / target) * 100)}%` }}
-                  />
-                </div>
-                <span className="text-neutral-500 font-mono text-xs">{done}/{target}×</span>
-              </div>
-            </div>
-
-            <div className="text-neutral-600 font-mono text-lg">›</div>
-          </button>
-        );
-      })}
-    </div>
-  </div>
-);
-  }
-
-  const t = FREQUENCY_TARGETS[state.currentSessionType];
-  const maSessionSub = state.activeSession?.maSessionSubtype;
-  const subtypeLabel = [
-state.currentMASubtype ? state.currentMASubtype.toUpperCase() : null,
-maSessionSub ? maSessionSub.toUpperCase() : null,
-  ].filter(Boolean).join(' · ');
-  const subtypeDisplay = subtypeLabel ? ` — ${subtypeLabel}` : '';
-  const prescription = state.activeSession.prescription || {};
-  const isScheduledSession = !!(prescription.scheduledDate && prescription.scheduledSlot);
-  const isMicroBreakSession = state.currentSessionType === 'mobility'
-&& (prescription.sessionVariant === 'micro-break' || prescription.source === 'micro-break');
-  const resultsById = Object.fromEntries((state.activeSession.exerciseResults || []).map(r => [r.exerciseId, r]));
-
-  return (
-<div className="space-y-4">
-  {cancelConfirm && (
-    <div className="border-2 border-red-500 p-4 space-y-3 bg-neutral-950">
-      <div className="text-red-500 font-mono text-xs uppercase tracking-widest">{isScheduledSession ? 'SKIP SCHEDULED SESSION?' : 'CANCEL SESSION?'}</div>
-      <div className="text-neutral-400 font-mono text-xs">
-        {isScheduledSession
-          ? 'Skipping this scheduled slot increases accountability debt and can delay progression.'
-          : 'This session will be discarded. Progress lost.'}
-      </div>
-      <div className="flex gap-2">
-        <button
-          onClick={() => setCancelConfirm(false)}
-          className="flex-1 border border-neutral-700 py-3 font-mono text-sm uppercase active:bg-neutral-800"
-        >
-          KEEP GOING
-        </button>
-        <button
-          onClick={() => {
-            setCancelConfirm(false);
-            if (isScheduledSession) {
-              dispatch({
-                type: 'SKIP_SCHEDULED_SLOT',
-                payload: { dateKey: prescription.scheduledDate, slot: prescription.scheduledSlot },
-              });
-            }
-            dispatch({ type: 'CANCEL_SESSION' });
-          }}
-          className="flex-1 bg-red-500 text-neutral-950 py-3 font-mono text-sm uppercase font-bold active:bg-red-700"
-        >
-          {isScheduledSession ? 'SKIP IT' : 'CANCEL IT'}
-        </button>
-      </div>
-    </div>
-  )}
-
-  <div className="border border-neutral-800 p-4 space-y-2">
-    <button
-      onClick={() => setCancelConfirm(true)}
-      className="flex items-center gap-2 text-neutral-500 active:text-neutral-300 font-mono text-xs uppercase mb-2 py-2 -my-2 pr-4"
-    >
-      <ArrowLeft size={14} /> BACK
-    </button>
-    <div className="flex items-center gap-3">
-      <span className="text-2xl">{t.icon}</span>
-      <div>
-        <div className={`font-mono text-sm uppercase tracking-widest font-bold ${t.color}`}>
-          {isMicroBreakSession ? 'MOBILITY • MICRO BREAK' : `${t.label}${subtypeDisplay}`}
-        </div>
-        <div className="text-neutral-500 font-mono text-xs">
-          TARGET RPE: {prescription.targetRPE || 7} · MODE: {prescription.intensityTag || 'moderate'} · {prescription.timeFit || 60}MIN
-        </div>
-        <div className="text-neutral-600 font-mono text-xs">{prescription.reasonText}</div>
-        {prescription.plannerSource && (
-          <div className={`font-mono text-[10px] uppercase ${prescription.plannerSource === 'ai' ? 'text-green-400' : 'text-orange-400'}`}>
-            PLANNER: {prescription.plannerSource === 'ai' ? 'AI PLAN' : 'FALLBACK ENGINE'}
-          </div>
-        )}
-        {prescription.aiRationale && (
-          <div className="text-neutral-500 font-mono text-xs">AI RATIONALE: {prescription.aiRationale}</div>
-        )}
-        {Array.isArray(prescription.guardrailFixes) && prescription.guardrailFixes.length > 0 && (
-          <div className="text-neutral-600 font-mono text-[10px]">
-            Guardrail fixes: {prescription.guardrailFixes.length}
-          </div>
-        )}
-        {isScheduledSession && (
-          <div className="text-neutral-500 font-mono text-xs">
-            SCHEDULED: {String(prescription.scheduledDate)} · {String(prescription.scheduledSlot).toUpperCase()}
-          </div>
-        )}
-      </div>
-    </div>
-  </div>
-
-  {/* AI Coaching Notes */}
-  {state.aiConfig.enabled && (
-    <div className="mb-4 p-3 border border-neutral-700 bg-neutral-900">
-      {state.aiConfig.coachingLoading && (
-        <div className="text-neutral-400 font-mono text-xs animate-pulse">⚡ AI COACH THINKING...</div>
-      )}
-      {state.aiConfig.coachingError && (
-        <div className="text-red-400 font-mono text-xs">⚠ AI: {state.aiConfig.coachingError}</div>
-      )}
-      {state.aiConfig.coachingWarning && !state.aiConfig.coachingLoading && (
-        <div className="text-orange-400 font-mono text-xs">⚠ AI: {state.aiConfig.coachingWarning}</div>
-      )}
-      {state.aiConfig.coachingNotes && !state.aiConfig.coachingLoading && (
-        <div className="space-y-1">
-          <div className="text-yellow-400 font-mono text-xs font-bold uppercase">⚡ COACH</div>
-          {(state.aiConfig.lastCoachSource || state.aiConfig.lastCoachQuality) && (
-            <div className="text-neutral-600 font-mono text-[10px] uppercase">
-              SOURCE: {state.aiConfig.lastCoachSource || 'primary'} · QUALITY: {state.aiConfig.lastCoachQuality || 'complete'}
-            </div>
-          )}
-          <div className="text-neutral-100 font-mono text-xs">{state.aiConfig.coachingNotes.sessionFocus}</div>
-          {state.aiConfig.coachingNotes.watchOut && (
-            <div className="text-orange-400 font-mono text-xs">⚠ {state.aiConfig.coachingNotes.watchOut}</div>
-          )}
-        </div>
-      )}
-    </div>
-  )}
-
-  {state.aiConfig.enabled && (
-    <div className="mb-4 p-3 border border-neutral-700 bg-neutral-900 space-y-2">
-      <div className="text-yellow-400 font-mono text-xs uppercase font-bold">ASK COACH (LIVE)</div>
-      <textarea
-        value={qaInput}
-        onChange={(e) => setQaInput(e.target.value)}
-        placeholder="Ask about any exercise, setup, form cue, or what to prioritize next."
-        className="w-full bg-neutral-950 border border-neutral-800 p-2 text-neutral-100 font-mono text-xs resize-none"
-        rows={3}
-      />
-      <button
-        onClick={askCoachFromTrain}
-        disabled={state.aiConfig?.qaLoading || !qaInput.trim()}
-        className="w-full border border-red-500 py-2 font-mono text-xs uppercase text-red-500 font-bold disabled:opacity-40 active:bg-neutral-900"
-        style={{ WebkitTapHighlightColor: 'transparent' }}
-      >
-        {state.aiConfig?.qaLoading ? 'ASKING AI...' : 'ASK NOW'}
-      </button>
-      {state.aiConfig?.qaError && (
-        <div className="text-red-400 font-mono text-xs">{state.aiConfig.qaError}</div>
-      )}
-      {state.aiConfig?.qaAnswer && !state.aiConfig?.qaLoading && (
-        <div className="border-l-2 border-yellow-500 pl-2 text-neutral-200 font-mono text-xs whitespace-pre-wrap">
-          {state.aiConfig.qaAnswer}
-        </div>
-      )}
-    </div>
-  )}
-
-  <div className="space-y-3">
-    {state.activeSession.exercises.map((ex, idx) => {
-      const coachNotes = state.aiConfig.coachingNotes?.exercises || {};
-      const selectionRationale = state.activeSession.prescription?.selectionMeta?.rationaleByExerciseId?.[ex.id] || null;
-      return (
-        <ExerciseCard
-          key={ex.id || idx}
-          ex={ex}
-          idx={idx}
-          sessionType={state.currentSessionType}
-          result={resultsById[ex.id]}
-          coachNote={coachNotes[ex.name] || null}
-          selectionRationale={selectionRationale}
-          onResultChange={(patch) => dispatch({ type: 'LOG_EXERCISE_RESULT', payload: { exerciseId: ex.id, patch } })}
-          onSwap={(oldId, newEx) => dispatch({ type: 'SWAP_SESSION_EXERCISE', payload: { oldId, newEx } })}
-        />
-      );
-    })}
-  </div>
-
-  <SessionCompleteModal state={state} dispatch={dispatch} />
-</div>
-  );
+function getDefaultBlockForGoal(goal) {
+    if (goal === 'strength' || goal === 'sport') return 'intensification';
+    if (goal === 'fat_loss' || goal === 'endurance') return 'accumulation';
+    return 'accumulation';
 }
 
-function ExerciseCard({ ex, idx, result, onResultChange, sessionType, onSwap, coachNote, selectionRationale }) {
-  const variant = ex.visual || 'athletic';
-  const [showSwap, setShowSwap] = useState(false);
-  const alternatives = useMemo(() => getAlternatives(ex, sessionType), [ex, sessionType]);
-
-  // Parse round timer for drills with duration like "5×3min"
-  const timerMatch = ex.duration ? ex.duration.match(/(\d+)(?:×(\d+)min|min)/) : null;
-  const timerWorkSecs = timerMatch ? parseInt(timerMatch[2] || timerMatch[1]) * 60 : null;
-
-  return (
-<div className="border border-neutral-800 p-4 flex gap-4 items-start">
-  {/* Stick figure visual */}
-  <div className="flex-shrink-0 bg-neutral-900 border border-neutral-800 flex items-center justify-center p-1" style={{ minWidth: 70 }}>
-    <StickFigure variant={variant} size={60} />
-  </div>
-
-  <div className="flex-1 space-y-1.5 min-w-0">
-    <div className="flex items-start justify-between gap-2">
-      <div className="text-neutral-100 font-mono text-sm font-bold uppercase flex-1">{ex.name}</div>
-      {alternatives.length > 0 && (
-        <button
-          onClick={() => setShowSwap(v => !v)}
-          className="text-neutral-600 font-mono text-xs uppercase border border-neutral-800 px-2 py-0.5 flex-shrink-0 active:bg-neutral-900"
-          style={{ WebkitTapHighlightColor: 'transparent' }}
-        >
-          {showSwap ? 'CLOSE' : 'SWAP'}
-        </button>
-      )}
-    </div>
-
-    {showSwap && (
-      <div className="border border-neutral-700 bg-neutral-900 p-2 space-y-1">
-        <div className="text-neutral-500 font-mono text-xs uppercase mb-1">SWAP WITH:</div>
-        {alternatives.map(alt => (
-          <button
-            key={alt.id}
-            onClick={() => { onSwap && onSwap(ex.id, alt); setShowSwap(false); }}
-            className="w-full text-left border border-neutral-800 px-3 py-2 font-mono text-xs text-neutral-300 active:bg-neutral-800 flex justify-between items-center"
-            style={{ WebkitTapHighlightColor: 'transparent' }}
-          >
-            <span>{alt.name}</span>
-            <span className="text-neutral-600">{alt.sets && alt.reps ? `${alt.sets}×${alt.reps}` : alt.duration || ''}</span>
-          </button>
-        ))}
-      </div>
-    )}
-
-    {ex.sets && ex.reps && (
-      <div className="text-red-500 font-mono text-xs font-bold">{ex.sets} × {ex.reps}</div>
-    )}
-    {ex.duration && (
-      <div className="text-red-500 font-mono text-xs font-bold">{ex.duration}</div>
-    )}
-    {ex.distance && (
-      <div className="text-red-500 font-mono text-xs font-bold">{ex.distance} · {ex.zone}</div>
-    )}
-    {(ex.rpe || ex.targetRPE) && (
-      <div className="text-neutral-500 font-mono text-xs">TARGET RPE: {ex.rpe || ex.targetRPE}</div>
-    )}
-    {ex.cue && (
-      <div className="text-neutral-400 font-mono text-xs italic border-l border-neutral-700 pl-2">{ex.cue}</div>
-    )}
-    {ex.desc && (
-      <div className="text-neutral-400 font-mono text-xs italic border-l border-neutral-700 pl-2">{ex.desc}</div>
-    )}
-    {ex.focus && (
-      <div className="text-neutral-400 font-mono text-xs"><span className="text-neutral-600">FOCUS: </span>{ex.focus}</div>
-    )}
-    {selectionRationale && (
-      <div className="text-cyan-400 font-mono text-xs">
-        <span className="text-cyan-600">WHY TODAY: </span>
-        {selectionRationale}
-      </div>
-    )}
-    {Array.isArray(ex.microFlow?.steps) && ex.microFlow.steps.length > 0 && (
-      <div className="border border-neutral-800 bg-neutral-900 p-2 space-y-1 mt-1">
-        <div className="text-neutral-500 font-mono text-xs uppercase">MICRO FLOW · {ex.microFlow.minutes || ex.duration}</div>
-        {ex.microFlow.steps.map((step, stepIdx) => (
-          <div key={`${ex.id || ex.name}_step_${stepIdx}`} className="text-neutral-300 font-mono text-xs">
-            {stepIdx + 1}. {step}
-          </div>
-        ))}
-      </div>
-    )}
-    {ex.prescribedLoadHint && (
-      <div className="text-yellow-400 font-mono text-xs">⬆ LOAD HINT: {ex.prescribedLoadHint}</div>
-    )}
-    {coachNote && (
-      <div className="mt-2 p-2 bg-neutral-900 border-l-2 border-yellow-500">
-        <div className="text-yellow-400 font-mono text-xs font-bold">COACH</div>
-        <div className="text-neutral-300 font-mono text-xs">{coachNote.cue}</div>
-        {coachNote.why && <div className="text-neutral-500 font-mono text-xs mt-1">{coachNote.why}</div>}
-      </div>
-    )}
-
-    {/* Round timer for timed drills */}
-    {timerWorkSecs && <RoundTimer workSeconds={timerWorkSecs} restSeconds={60} />}
-
-    {result && (
-      <div className="border border-neutral-800 bg-neutral-900 p-2 space-y-2 mt-2">
-        <div className="text-neutral-500 font-mono text-xs uppercase">LOG RESULT</div>
-
-        {/* Running: show actual distance + time instead of sets */}
-        {ex.domain === 'running' ? (
-          <div className="grid grid-cols-2 gap-2">
-            <input
-              type="text"
-              value={result.performed.actualDistance || ''}
-              onChange={e => onResultChange({ actualDistance: e.target.value })}
-              placeholder="Dist (km)"
-              className="bg-neutral-950 border border-neutral-800 px-2 py-2 text-neutral-100 font-mono text-base"
-            />
-            <input
-              type="text"
-              value={result.performed.actualTime || ''}
-              onChange={e => onResultChange({ actualTime: e.target.value })}
-              placeholder="Time (mm:ss)"
-              className="bg-neutral-950 border border-neutral-800 px-2 py-2 text-neutral-100 font-mono text-base"
-            />
-          </div>
-        ) : (
-          <div className="grid grid-cols-2 gap-2">
-            <input
-              type="number"
-              min="0"
-              value={result.performed.setsCompleted}
-              onChange={e => onResultChange({ setsCompleted: Number(e.target.value) })}
-              placeholder="Sets done"
-              className="bg-neutral-950 border border-neutral-800 px-2 py-2 text-neutral-100 font-mono text-base"
-            />
-            <input
-              type="text"
-              value={result.performed.topMetric}
-              onChange={e => onResultChange({ topMetric: e.target.value })}
-              placeholder="Top set (e.g. 80×5)"
-              className="bg-neutral-950 border border-neutral-800 px-2 py-2 text-neutral-100 font-mono text-base"
-            />
-          </div>
-        )}
-
-        <div className="space-y-1">
-          <div className="flex justify-between">
-            <span className="text-neutral-500 font-mono text-xs uppercase">Exercise RPE</span>
-            <span className="text-neutral-100 font-mono text-xs">{result.performed.effortRPE}</span>
-          </div>
-          <input
-            type="range" min="1" max="10"
-            value={result.performed.effortRPE}
-            onChange={e => onResultChange({ effortRPE: Number(e.target.value) })}
-            className="w-full accent-red-500"
-          />
-        </div>
-        <label className="flex items-center gap-2 text-xs font-mono text-red-500 uppercase">
-          <input
-            type="checkbox"
-            checked={!!result.performed.pain}
-            onChange={e => onResultChange({ pain: e.target.checked })}
-          />
-          Pain / issue on this exercise
-        </label>
-      </div>
-    )}
-  </div>
-</div>
-  );
+function getDefaultCoachPersona(goal, fitnessLevels) {
+    const levels = Object.values(fitnessLevels || {});
+    const hasAdvanced = levels.includes('advanced');
+    if (goal === 'strength' || goal === 'sport') return hasAdvanced ? 'drill_sergeant' : 'coach';
+    if (goal === 'endurance') return 'data_nerd';
+    if (goal === 'general') return 'coach';
+    return 'coach';
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// SESSION COMPLETE MODAL
-// ─────────────────────────────────────────────────────────────────────────────
-
-function SessionCompleteModal({ state, dispatch }) {
-  const [rpe, setRpe] = useState(5);
-  const [recovery, setRecovery] = useState(5);
-  const [notes, setNotes] = useState('');
-  const [open, setOpen] = useState(false);
-  const [completeAsModified, setCompleteAsModified] = useState(false);
-
-  const submit = () => {
-dispatch({ type: 'COMPLETE_SESSION_V2', payload: { rpe, recovery, notes, completeAsModified } });
-  };
-
-  return (
-<>
-  {!open ? (
-    <button
-      onClick={() => setOpen(true)}
-      className="w-full bg-red-500 text-neutral-950 py-5 font-mono font-bold text-base uppercase tracking-widest active:bg-red-700"
-      style={{ WebkitTapHighlightColor: 'transparent' }}
-    >
-      COMPLETE SESSION
-    </button>
-  ) : (
-    <div className="border border-red-500 p-5 space-y-4">
-      <div className="flex items-center justify-between">
-        <div className="text-red-500 font-mono text-sm uppercase tracking-widest">SESSION FEEDBACK</div>
-        <button onClick={() => setOpen(false)} className="text-neutral-500 hover:text-neutral-300 font-mono text-xs uppercase">
-          ← CANCEL
-        </button>
-      </div>
-
-      <div className="space-y-2">
-        <div className="flex justify-between">
-          <label className="text-neutral-400 font-mono text-xs uppercase">RPE (effort)</label>
-          <span className="text-red-500 font-mono text-sm font-bold">{rpe} / 10</span>
-        </div>
-        <input type="range" min="1" max="10" value={rpe}
-          onChange={e => setRpe(+e.target.value)}
-          className="w-full accent-red-500" />
-      </div>
-
-      <div className="space-y-2">
-        <div className="flex justify-between">
-          <label className="text-neutral-400 font-mono text-xs uppercase">Recovery (how fresh?)</label>
-          <span className="text-green-400 font-mono text-sm font-bold">{recovery} / 10</span>
-        </div>
-        <input type="range" min="1" max="10" value={recovery}
-          onChange={e => setRecovery(+e.target.value)}
-          className="w-full accent-green-500" />
-      </div>
-
-      <div className="space-y-1">
-        <label className="text-neutral-400 font-mono text-xs uppercase">Notes (optional)</label>
-        <textarea
-          value={notes}
-          onChange={e => setNotes(e.target.value)}
-          placeholder="How did it feel? Any PRs?"
-          className="w-full bg-neutral-900 border border-neutral-800 p-3 text-neutral-100 font-mono text-base placeholder-neutral-700 resize-none"
-          rows={3}
-        />
-      </div>
-
-      <label className="flex items-center gap-2 text-neutral-400 font-mono text-xs uppercase">
-        <input
-          type="checkbox"
-          checked={completeAsModified}
-          onChange={e => setCompleteAsModified(e.target.checked)}
-        />
-        Completed as modified (override/substitutions)
-      </label>
-
-      <button
-        onClick={submit}
-        className="w-full bg-red-500 text-neutral-950 py-4 font-mono font-bold text-base uppercase tracking-widest active:bg-red-700"
-        style={{ WebkitTapHighlightColor: 'transparent' }}
-      >
-        LOG SESSION
-      </button>
-    </div>
-  )}
-</>
-  );
+function getDefaultAdaptation(goal, fitnessLevels) {
+    const levels = Object.values(fitnessLevels || {});
+    const hasBeginner = levels.length === 0 || levels.includes('beginner');
+    if (hasBeginner) return 'conservative';
+    if (goal === 'strength' || goal === 'sport') return 'aggressive';
+    return 'moderate';
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// PROGRESS VIEW
-// ─────────────────────────────────────────────────────────────────────────────
-
-function ProgressView({ state, dispatch }) {
-  const [tab, setTab] = useState('domains');
-  const topExercises = useMemo(() => {
-return Object.entries(state.progression.exercises || {})
-  .sort((a, b) => (b[1].exposures || 0) - (a[1].exposures || 0))
-  .slice(0, 6);
-  }, [state.progression.exercises]);
-
-  return (
-<div className="space-y-4">
-  <div className="grid grid-cols-3 border border-neutral-800">
-    <button
-      onClick={() => setTab('domains')}
-      className={`flex-1 py-3 font-mono text-xs uppercase tracking-widest transition ${
-        tab === 'domains' ? 'bg-red-500 text-neutral-950 font-bold' : 'text-neutral-500 hover:text-neutral-300'
-      }`}
-    >
-      DOMAINS
-    </button>
-    <button
-      onClick={() => setTab('calisthenics')}
-      className={`flex-1 py-3 font-mono text-xs uppercase tracking-widest transition ${
-        tab === 'calisthenics' ? 'bg-red-500 text-neutral-950 font-bold' : 'text-neutral-500 hover:text-neutral-300'
-      }`}
-    >
-      SKILLS
-    </button>
-    <button
-      onClick={() => setTab('coach')}
-      className={`flex-1 py-3 font-mono text-xs uppercase tracking-widest transition ${
-        tab === 'coach' ? 'bg-red-500 text-neutral-950 font-bold' : 'text-neutral-500 hover:text-neutral-300'
-      }`}
-    >
-      COACH IQ
-    </button>
-  </div>
-
-  {tab === 'domains' && (
-    <div className="space-y-4">
-      <div className="border border-neutral-800 p-4 space-y-2">
-        <div className="text-red-500 font-mono text-xs uppercase tracking-widest">COMPLETE ATHLETE SCORECARD</div>
-        <div className="grid grid-cols-2 gap-2">
-          {DOMAIN_KEYS.map((domain) => (
-            <div key={domain} className="space-y-1">
-              <div className="flex justify-between text-xs font-mono">
-                <span className="text-neutral-400 uppercase">{domain}</span>
-                <span className="text-neutral-100">{state.athleteModel.domainScores[domain] || 0}</span>
-              </div>
-              <div className="w-full bg-neutral-900 h-1.5 border border-neutral-800">
-                <div className="h-full bg-red-500" style={{ width: `${state.athleteModel.domainScores[domain] || 0}%` }} />
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {Object.entries(state.domains).map(([key, data]) => (
-        <div key={key} className="border border-neutral-800 p-4 space-y-2">
-          <div className="flex justify-between items-center">
-            <div className="text-neutral-200 font-mono text-sm uppercase tracking-widest font-bold">{key}</div>
-            <div className="text-neutral-500 font-mono text-xs">
-              {data.sessions} sessions · Lv.{data.level}
-              {key === 'conditioning' && data.weeklyKm > 0 && ` · ${data.weeklyKm.toFixed(1)}km`}
-            </div>
-          </div>
-          {data.trend && data.trend.length > 1 ? (
-            <div className="h-20">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={data.trend}>
-                  <Tooltip
-                    contentStyle={{ backgroundColor:'#0a0a0a', border:'1px solid #333', fontFamily:'monospace', fontSize:10 }}
-                    labelFormatter={() => ''}
-                  />
-                  <Line type="monotone" dataKey="rpe" stroke="#ef4444" dot={false} strokeWidth={1.5} />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          ) : (
-            <div className="h-12 flex items-center">
-              <div className="text-neutral-700 font-mono text-xs">No trend data yet</div>
-            </div>
-          )}
-        </div>
-      ))}
-
-      {/* PR board */}
-      <div className="border border-neutral-800 p-4 space-y-3">
-        <div className="text-red-500 font-mono text-sm uppercase tracking-widest">STRENGTH PRs (kg)</div>
-        {Object.entries(state.domains.strength.prs).map(([lift, pr]) => (
-          <div key={lift} className="flex items-center gap-3">
-            <span className="text-neutral-400 font-mono text-xs uppercase w-16">{lift}</span>
-            <input
-              type="number"
-              value={pr || ''}
-              onChange={e => dispatch({ type: 'SET_PR', payload: { lift, value: parseInt(e.target.value) || 0 } })}
-              placeholder="0"
-              className="flex-1 bg-neutral-900 border border-neutral-800 px-3 py-3 text-neutral-100 font-mono text-base"
-            />
-            <span className="text-neutral-600 font-mono text-xs">kg</span>
-          </div>
-        ))}
-      </div>
-
-      <div className="border border-neutral-800 p-4 space-y-3">
-        <div className="text-red-500 font-mono text-sm uppercase tracking-widest">KEY EXERCISE PROGRESSION</div>
-        {topExercises.length === 0 && (
-          <div className="text-neutral-600 font-mono text-xs">No progression records yet.</div>
-        )}
-        {topExercises.map(([exerciseId, rec]) => {
-          const history = rec.history || [];
-          const rpeData = history.map((h, i) => ({ x: i + 1, rpe: h.effortRPE || 0 }));
-          const outcomeColor = rec.lastOutcome === 'advance' ? 'text-green-400' : rec.lastOutcome === 'regress' ? 'text-red-400' : 'text-yellow-400';
-          return (
-            <div key={exerciseId} className="border-l-2 border-neutral-700 pl-3 space-y-1">
-              <div className="flex justify-between items-start">
-                <div className="text-neutral-200 font-mono text-xs font-bold">{exerciseId.replace(/_/g,' ').replace(/strength |calisthenics |running /gi,'')}</div>
-                <div className={`font-mono text-xs uppercase font-bold ${outcomeColor}`}>{rec.lastOutcome || 'hold'}</div>
-              </div>
-              <div className="flex justify-between text-neutral-500 font-mono text-xs">
-                <span>{rec.exposures || 0} sessions</span>
-                <span>{rec.nextPrescription?.loadHint || '—'}</span>
-              </div>
-              {rpeData.length > 1 ? (
-                <div className="h-12 mt-1">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={rpeData}>
-                      <Line type="monotone" dataKey="rpe" stroke="#ef4444" dot={false} strokeWidth={1.5} />
-                      <Tooltip
-                        contentStyle={{ backgroundColor:'#0a0a0a', border:'1px solid #333', fontFamily:'monospace', fontSize:9 }}
-                        formatter={(v) => [`RPE ${v}`, '']}
-                        labelFormatter={(i) => `Session ${i}`}
-                      />
-                    </LineChart>
-                  </ResponsiveContainer>
-                </div>
-              ) : (
-                <div className="text-neutral-700 font-mono text-xs">{rpeData.length === 1 ? '1 session logged — trend builds from 2+' : 'No data yet'}</div>
-              )}
-              {history.length > 0 && history[history.length - 1].topMetric && (
-                <div className="text-neutral-500 font-mono text-xs">Last: {history[history.length - 1].topMetric}</div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  )}
-
-  {tab === 'calisthenics' && (
-    <div className="space-y-4">
-      {Object.entries(state.domains.calisthenics.skills).map(([skill, data]) => {
-        const maxLevels = { pullUp:9, pushUp:7, squat:5, core:6, handstand:7 };
-        const max = maxLevels[skill] || 9;
-        const db = EXERCISE_DB_V5.calisthenics[skill];
-        const current = db.find(e => e.level === data.level) || db[0];
-        const pct = ((data.level - 1) / (max - 1)) * 100;
-        const skillIcons = { pullUp:'💪', pushUp:'🤜', squat:'🦵', core:'🔥', handstand:'🤸' };
-
-        return (
-          <div key={skill} className="border border-neutral-800 p-4 space-y-3">
-            {/* Skill header */}
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <span className="text-lg">{skillIcons[skill]}</span>
-                <span className="text-neutral-200 font-mono text-sm uppercase tracking-widest font-bold">{skill}</span>
-              </div>
-              <span className="text-neutral-500 font-mono text-xs">Lv {data.level}/{max}</span>
-            </div>
-
-            {/* Current exercise + visual */}
-            {current && (
-              <div className="flex items-start gap-3 bg-neutral-900 p-3">
-                <div className="bg-neutral-950 border border-neutral-800 p-1 flex-shrink-0">
-                  <StickFigure variant={current.visual || 'athletic'} size={52} />
-                </div>
-                <div className="space-y-1 flex-1">
-                  <div className="text-red-500 font-mono text-xs font-bold uppercase">{current.name}</div>
-                  <div className="text-neutral-400 font-mono text-xs">{current.sets} × {current.reps}</div>
-                  {current.cue && (
-                    <div className="text-neutral-500 font-mono text-xs italic">{current.cue}</div>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* Progress bar */}
-            <div className="space-y-1">
-              <div className="w-full bg-neutral-900 h-2 border border-neutral-800">
-                <div className="bg-red-500 h-full transition-all" style={{ width: `${pct}%` }} />
-              </div>
-              <div className="flex justify-between text-neutral-600 font-mono text-xs">
-                <span>Lv 1</span>
-                <span>Lv {max}</span>
-              </div>
-            </div>
-
-            {/* Level controls */}
-            <div className="flex gap-2">
-              <button
-                onClick={() => dispatch({ type:'SET_CALI_SKILL_LEVEL', payload:{ skill, level: data.level - 1 } })}
-                disabled={data.level <= 1}
-                className="flex-1 border border-neutral-700 py-2 font-mono text-xs uppercase hover:bg-neutral-900 transition disabled:opacity-30 disabled:cursor-not-allowed"
-              >
-                ▼ LEVEL DOWN
-              </button>
-              <button
-                onClick={() => dispatch({ type:'SET_CALI_SKILL_LEVEL', payload:{ skill, level: data.level + 1 } })}
-                disabled={data.level >= max}
-                className="flex-1 border border-red-600 text-red-500 py-2 font-mono text-xs uppercase hover:bg-red-500 hover:text-neutral-950 transition disabled:opacity-30 disabled:cursor-not-allowed"
-              >
-                ▲ LEVEL UP
-              </button>
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  )}
-
-  {tab === 'coach' && (
-    <div className="space-y-4">
-      <div className="border border-neutral-800 p-4 grid grid-cols-2 gap-3 text-xs font-mono">
-        <div className="space-y-1">
-          <div className="text-neutral-500 uppercase">Control Score</div>
-          <div className="text-red-500 text-lg">{state.athleteModel.controlScore}</div>
-        </div>
-        <div className="space-y-1">
-          <div className="text-neutral-500 uppercase">Consistency</div>
-          <div className="text-green-400 text-lg">{state.athleteModel.consistencyScore}%</div>
-        </div>
-        <div className="space-y-1">
-          <div className="text-neutral-500 uppercase">Fatigue Debt</div>
-          <div className={`${state.athleteModel.fatigueDebt > 35 ? 'text-red-500' : 'text-yellow-400'} text-lg`}>
-            {Math.round(state.athleteModel.fatigueDebt)}
-          </div>
-        </div>
-        <div className="space-y-1">
-          <div className="text-neutral-500 uppercase">Adaptation Confidence</div>
-          <div className="text-neutral-100 text-lg">{Math.round(state.athleteModel.adaptationConfidence * 100)}%</div>
-        </div>
-      </div>
-
-      <div className="border border-neutral-800 p-4 space-y-2">
-        <div className="text-red-500 font-mono text-xs uppercase tracking-widest">Readiness vs Performance Trend</div>
-        {state.athleteModel.performanceTrend.length > 1 ? (
-          <div className="h-24">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={state.athleteModel.performanceTrend}>
-                <Tooltip
-                  contentStyle={{ backgroundColor:'#0a0a0a', border:'1px solid #333', fontFamily:'monospace', fontSize:10 }}
-                  labelFormatter={() => ''}
-                />
-                <Line type="monotone" dataKey="quality" stroke="#22c55e" dot={false} strokeWidth={1.5} />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-        ) : (
-          <div className="text-neutral-600 font-mono text-xs">Need at least 2 logged sessions.</div>
-        )}
-      </div>
-
-      <div className="border border-neutral-800 p-4 space-y-2">
-        <div className="text-red-500 font-mono text-xs uppercase tracking-widest">Stalled Items</div>
-        {(state.progression.stalledItems || []).length === 0 && (
-          <div className="text-neutral-600 font-mono text-xs">No stalled items right now.</div>
-        )}
-        {(state.progression.stalledItems || []).slice(-8).map((item, idx) => (
-          <div key={`${item.id}_${idx}`} className="text-neutral-400 font-mono text-xs border-l border-neutral-700 pl-2">
-            {item.id} · {item.reason}
-          </div>
-        ))}
-      </div>
-    </div>
-  )}
-</div>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// HISTORY VIEW
-// ─────────────────────────────────────────────────────────────────────────────
-
-function HistoryView({ state }) {
-  const [typeFilter, setTypeFilter] = useState('all');
-  const [intensityFilter, setIntensityFilter] = useState('all');
-
-  const logs = useMemo(() => {
-return [...state.sessionLogs]
-  .filter(log => {
-    if (typeFilter === 'all') return true;
-    if (typeFilter === 'gym') return log.type === 'gym' || log.type === 'calisthenics'; // legacy compat
-    return log.type === typeFilter;
-  })
-  .filter(log => {
-    if (intensityFilter === 'all') return true;
-    if (intensityFilter === 'high') return toNum(log.rpe, 0) >= 8;
-    if (intensityFilter === 'low') return toNum(log.rpe, 10) <= 6;
-    return true;
-  })
-  .reverse();
-  }, [state.sessionLogs, typeFilter, intensityFilter]);
-
-  if (logs.length === 0) {
-return (
-  <div className="border border-neutral-800 p-12 text-center space-y-2">
-    <div className="text-neutral-500 font-mono text-sm uppercase">NO SESSIONS LOGGED YET</div>
-    <div className="text-neutral-700 font-mono text-xs">Complete your first session to build history</div>
-  </div>
-);
-  }
-
-  return (
-<div className="space-y-3">
-  <div className="grid grid-cols-2 gap-2">
-    <select
-      value={typeFilter}
-      onChange={e => setTypeFilter(e.target.value)}
-      className="bg-neutral-900 border border-neutral-800 px-3 py-2 text-neutral-100 font-mono text-base"
-    >
-      <option value="all">ALL TYPES</option>
-      {SESSION_TYPES.map(type => (
-        <option key={type} value={type}>{FREQUENCY_TARGETS[type].label}</option>
-      ))}
-    </select>
-    <select
-      value={intensityFilter}
-      onChange={e => setIntensityFilter(e.target.value)}
-      className="bg-neutral-900 border border-neutral-800 px-3 py-2 text-neutral-100 font-mono text-base"
-    >
-      <option value="all">ALL INTENSITY</option>
-      <option value="high">HIGH (RPE 8+)</option>
-      <option value="low">LOW (RPE ≤6)</option>
-    </select>
-  </div>
-
-  <div className="text-red-500 font-mono text-xs uppercase tracking-widest px-1">
-    {logs.length} SESSION{logs.length !== 1 ? 'S' : ''} TOTAL
-  </div>
-  {logs.map((log, i) => {
-    const t = FREQUENCY_TARGETS[log.type];
-    const isMicroBreak = log.type === 'mobility'
-      && (log.prescription?.sessionVariant === 'micro-break' || log.prescription?.source === 'micro-break');
-    const variant = log.exercises?.[0]?.visual || 'athletic';
-    const runningPaceRows = (() => {
-      if (log.type !== 'running') return [];
-      try {
-        const namesById = Object.fromEntries((log.exercises || []).map((ex, idx) => [ex.id, ex.name || ex.id || `RUN ${idx + 1}`]));
-        return (log.exerciseResults || []).map((result, idx) => {
-          const exerciseName = namesById[result.exerciseId] || result.exerciseId || `RUN ${idx + 1}`;
-          const distanceKm = parseFloat(result?.performed?.actualDistance);
-          const totalSeconds = parseMmSsToSeconds(result?.performed?.actualTime);
-          if (!Number.isFinite(distanceKm) || distanceKm <= 0 || !Number.isFinite(totalSeconds) || totalSeconds <= 0) {
-            return { key: `${result.exerciseId || 'run'}_${idx}`, text: `${exerciseName}: —` };
-          }
-          const pace = formatPace(totalSeconds / distanceKm);
-          const distanceText = String(Math.round(distanceKm * 100) / 100);
-          return { key: `${result.exerciseId || 'run'}_${idx}`, text: `${exerciseName}: ${distanceText}km @ ${pace} /km` };
+function buildInitialSkillState(disciplines) {
+    const skills = {};
+    if (disciplines.includes('calisthenics')) {
+        Object.keys(EXERCISE_DB.calisthenics).forEach((k) => {
+            skills[k] = { level: 0 };
         });
-      } catch (err) {
-        return [{ key: 'running_pace_error', text: 'PACE: —' }];
-      }
-    })();
-    return (
-      <div key={i} className="border border-neutral-800 p-4 flex gap-3 items-start">
-        <div className="bg-neutral-900 border border-neutral-800 flex-shrink-0 p-1">
-          <StickFigure variant={variant} size={44} />
-        </div>
-        <div className="flex-1 min-w-0 space-y-1">
-          <div className="flex justify-between items-start">
-            <div>
-              <div className={`font-mono text-sm uppercase font-bold ${t ? t.color : 'text-neutral-100'}`}>
-                {isMicroBreak ? 'MOBILITY • MICRO BREAK' : (t ? t.label : log.type)}
-              </div>
-              {(log.maSubtype || log.maSessionSubtype) && (
-                <div className="text-neutral-500 font-mono text-xs">
-                  {[log.maSubtype, log.maSessionSubtype].filter(Boolean).map(s => s.toUpperCase()).join(' · ')}
-                </div>
-              )}
-            </div>
-            <div className="text-neutral-600 font-mono text-xs">{new Date(log.timestamp).toLocaleDateString()}</div>
-          </div>
-          <div className="flex gap-4 text-neutral-400 font-mono text-xs">
-            <span>RPE <span className="text-red-500 font-bold">{log.rpe}</span></span>
-            <span>RECOVERY <span className="text-green-400 font-bold">{log.recovery}</span></span>
-            <span>QUALITY <span className="text-yellow-400 font-bold">{log.completionQuality || '--'}</span></span>
-          </div>
-          {log.notes && (
-            <div className="text-neutral-600 font-mono text-xs italic truncate">{log.notes}</div>
-          )}
-          {log.adaptationApplied?.summary && (
-            <div className="text-neutral-500 font-mono text-xs">ADAPTATION: {log.adaptationApplied.summary}</div>
-          )}
-          {log.adaptationApplied?.nextFocus && (
-            <div className="text-neutral-700 font-mono text-xs">NEXT: {log.adaptationApplied.nextFocus}</div>
-          )}
-          {runningPaceRows.length > 0 && (
-            <div className="space-y-1">
-              {runningPaceRows.map(row => (
-                <div key={row.key} className="text-blue-400 font-mono text-xs">{row.text}</div>
-              ))}
-            </div>
-          )}
-          <div className="text-neutral-700 font-mono text-xs">
-            {log.exercises?.length} exercises
-          </div>
-        </div>
-      </div>
-    );
-  })}
-</div>
-  );
+    }
+    if (disciplines.includes('running')) {
+        skills.runningPace = { level: 0, track: 'running' };
+    }
+    if (disciplines.includes('martial_arts')) {
+        skills.martialTiming = { level: 0, track: 'martial_arts' };
+    }
+    return skills;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// SETTINGS VIEW
-// ─────────────────────────────────────────────────────────────────────────────
+function computeWeeklyGoalCheckFromState(state) {
+    const target = Math.max(1, state.profile.daysPerWeek || 5);
+    const completed = getSessionsThisWeek(state.sessionLogs).length;
+    const pct = Math.round((completed / target) * 100);
+    return {
+        completed,
+        target,
+        percent: pct,
+        status: pct >= 100 ? 'on-track' : pct >= 70 ? 'close' : 'behind',
+    };
+}
 
-function SettingsView({ state, dispatch }) {
-  const [resetConfirm, setResetConfirm] = useState(false);
-  const fileInputRef = useRef(null);
+function normalizeReadinessInputs(inputs) {
+    const merged = { ...INITIAL_STATE.readiness.inputs, ...(inputs || {}) };
+    if (!Number.isFinite(merged.energyLevel) && Number.isFinite(merged.energy)) {
+        merged.energyLevel = merged.energy;
+    }
+    if (!Number.isFinite(merged.energyLevel)) merged.energyLevel = 7;
+    delete merged.energy;
+    return merged;
+}
 
-  const handleExport = () => {
-const json = JSON.stringify(state, null, 2);
-const blob = new Blob([json], { type: 'application/json' });
-const url = URL.createObjectURL(blob);
-const a = document.createElement('a');
-a.href = url;
-a.download = `miyamoto_backup_${new Date().toISOString().split('T')[0]}.json`;
-a.click();
-URL.revokeObjectURL(url);
-  };
-
-  const handleImport = (e) => {
-const file = e.target.files?.[0];
-if (!file) return;
-const reader = new FileReader();
-reader.onload = (ev) => {
-  try {
-    const imported = JSON.parse(ev.target?.result);
-    dispatch({ type: 'IMPORT_STATE', payload: imported });
-    dispatch({ type: 'REBUILD_ROLLING_PLAN' });
-  } catch { alert('Invalid JSON file'); }
+const GEMINI_ALLOWED_MODELS = [
+    'gemini-3-flash-preview',
+    'gemini-3.1-flash-lite-preview',
+    'gemini-2.5-flash',
+    'gemini-flash-latest',
+];
+const GEMINI_DEFAULT_MODEL = 'gemini-3-flash-preview';
+const GEMINI_LEGACY_MODEL_MAP = {
+    'gemini-1.5-flash': GEMINI_DEFAULT_MODEL,
+    'gemini-1.5-pro': GEMINI_DEFAULT_MODEL,
+    'gemini-2.0-flash': GEMINI_DEFAULT_MODEL,
 };
-reader.readAsText(file);
-  };
 
-  return (
-<div className="space-y-4">
-  {/* Profile */}
-  <div className="border border-neutral-800 p-4 space-y-3">
-    <div className="text-red-500 font-mono text-sm uppercase tracking-widest">PROFILE</div>
-    {['name', 'age', 'bodyweight'].map(field => (
-      <div key={field} className="space-y-1">
-        <label className="text-neutral-500 font-mono text-xs uppercase">{field}</label>
-        <input
-          type="text"
-          value={state.profile[field] || ''}
-          onChange={e => dispatch({ type: 'SET_PROFILE_FIELD', payload: { field, value: e.target.value } })}
-          className="w-full bg-neutral-900 border border-neutral-800 px-3 py-3 text-neutral-100 font-mono text-base"
-        />
-      </div>
-    ))}
-  </div>
-
-  <div className="border border-neutral-800 p-4 space-y-3">
-    <div className="text-red-500 font-mono text-sm uppercase tracking-widest">GOALS (AI PLANNER)</div>
-    <div className="space-y-1">
-      <label className="text-neutral-500 font-mono text-xs uppercase">Primary Goal Type</label>
-      <select
-        value={state.profile.primaryGoalType || 'performance'}
-        onChange={e => dispatch({ type: 'SET_PROFILE_FIELD', payload: { field: 'primaryGoalType', value: e.target.value } })}
-        className="w-full bg-neutral-900 border border-neutral-800 px-3 py-2 text-neutral-100 font-mono text-sm"
-      >
-        <option value="performance">Performance</option>
-        <option value="fat_loss">Fat Loss</option>
-        <option value="muscle_gain">Muscle Gain</option>
-        <option value="combat_competition">Combat Competition</option>
-        <option value="general_health">General Health</option>
-      </select>
-    </div>
-    <div className="space-y-1">
-      <label className="text-neutral-500 font-mono text-xs uppercase">Secondary Goals (comma separated)</label>
-      <input
-        type="text"
-        value={(state.profile.secondaryGoals || []).join(', ')}
-        onChange={e => dispatch({
-          type: 'SET_PROFILE_FIELD',
-          payload: {
-            field: 'secondaryGoals',
-            value: String(e.target.value || '')
-              .split(',')
-              .map(v => v.trim())
-              .filter(Boolean),
-          },
-        })}
-        placeholder="e.g. stronger pull-ups, better mobility"
-        className="w-full bg-neutral-900 border border-neutral-800 px-3 py-2 text-neutral-100 font-mono text-sm"
-      />
-    </div>
-    <div className="space-y-1">
-      <label className="text-neutral-500 font-mono text-xs uppercase">Timeline (weeks)</label>
-      <input
-        type="number"
-        min="1"
-        max="52"
-        value={state.profile.timelineWeeks || 12}
-        onChange={e => dispatch({ type: 'SET_PROFILE_FIELD', payload: { field: 'timelineWeeks', value: clamp(toNum(e.target.value, 12), 1, 52) } })}
-        className="w-full bg-neutral-900 border border-neutral-800 px-3 py-2 text-neutral-100 font-mono text-sm"
-      />
-    </div>
-    <div className="space-y-1">
-      <label className="text-neutral-500 font-mono text-xs uppercase">Priority Domains (comma separated)</label>
-      <input
-        type="text"
-        value={(state.profile.priorityDomains || []).join(', ')}
-        onChange={e => dispatch({
-          type: 'SET_PROFILE_FIELD',
-          payload: {
-            field: 'priorityDomains',
-            value: String(e.target.value || '')
-              .split(',')
-              .map(v => v.trim().toLowerCase())
-              .filter(Boolean),
-          },
-        })}
-        placeholder="strength, conditioning, mobility"
-        className="w-full bg-neutral-900 border border-neutral-800 px-3 py-2 text-neutral-100 font-mono text-sm"
-      />
-    </div>
-    <div className="space-y-1">
-      <label className="text-neutral-500 font-mono text-xs uppercase">Goal Notes</label>
-      <textarea
-        value={state.profile.goalNotes || ''}
-        onChange={e => dispatch({ type: 'SET_PROFILE_FIELD', payload: { field: 'goalNotes', value: e.target.value } })}
-        rows={3}
-        className="w-full bg-neutral-900 border border-neutral-800 px-3 py-2 text-neutral-100 font-mono text-sm resize-none"
-      />
-    </div>
-    <div className="space-y-1">
-      <label className="text-neutral-500 font-mono text-xs uppercase">Must Avoid Tags (comma separated)</label>
-      <input
-        type="text"
-        value={(state.profile.mustAvoidTags || []).join(', ')}
-        onChange={e => dispatch({
-          type: 'SET_PROFILE_FIELD',
-          payload: {
-            field: 'mustAvoidTags',
-            value: String(e.target.value || '')
-              .split(',')
-              .map(v => v.trim().toLowerCase())
-              .filter(Boolean),
-          },
-        })}
-        placeholder="knee pain, overhead maxing"
-        className="w-full bg-neutral-900 border border-neutral-800 px-3 py-2 text-neutral-100 font-mono text-sm"
-      />
-    </div>
-  </div>
-
-  {/* AI COACH */}
-  <div className="space-y-3">
-    <div className="text-red-500 font-mono text-sm font-bold uppercase tracking-widest">AI Coach</div>
-
-    <label className="flex items-center justify-between">
-      <span className="text-neutral-300 font-mono text-xs uppercase">Enable Gemini AI Coaching</span>
-      <input
-        type="checkbox"
-        checked={!!state.aiConfig.enabled}
-        onChange={e => dispatch({ type: 'UPDATE_AI_CONFIG', payload: { enabled: e.target.checked } })}
-      />
-    </label>
-
-    {state.aiConfig.enabled && (
-      <>
-        <label className="flex items-center justify-between">
-          <span className="text-neutral-300 font-mono text-xs uppercase">Enable AI-First Planning</span>
-          <input
-            type="checkbox"
-            checked={!!state.aiConfig.planningEnabled}
-            onChange={e => dispatch({ type: 'UPDATE_AI_CONFIG', payload: { planningEnabled: e.target.checked } })}
-          />
-        </label>
-        <div>
-          <div className="text-neutral-500 font-mono text-xs uppercase mb-1">Gemini API Key</div>
-          <input
-            type="password"
-            value={state.aiConfig.apiKey}
-            onChange={e => dispatch({ type: 'UPDATE_AI_CONFIG', payload: { apiKey: e.target.value } })}
-            placeholder="AIza..."
-            className="w-full bg-neutral-950 border border-neutral-700 px-3 py-2 text-neutral-100 font-mono text-base"
-          />
-          <div className="text-neutral-600 font-mono text-xs mt-1">Use Gemini 3 Flash Preview or Flash variants. 429s auto-retry; repeated throttling may require a short wait.</div>
-        </div>
-        <div>
-          <div className="text-neutral-500 font-mono text-xs uppercase mb-1">Model</div>
-          <select
-            value={state.aiConfig.model}
-            onChange={e => dispatch({ type: 'UPDATE_AI_CONFIG', payload: { model: e.target.value } })}
-            className="w-full bg-neutral-950 border border-neutral-700 px-3 py-2 text-neutral-100 font-mono text-sm"
-          >
-            <option value="gemini-3-flash-preview">gemini-3-flash-preview (default)</option>
-            <option value="gemini-2.5-flash">gemini-2.5-flash</option>
-            <option value="gemini-flash-latest">gemini-flash-latest</option>
-          </select>
-        </div>
-        <div>
-          <div className="text-neutral-500 font-mono text-xs uppercase mb-1">Planning Model</div>
-          <select
-            value={state.aiConfig.planningModel || state.aiConfig.model}
-            onChange={e => dispatch({ type: 'UPDATE_AI_CONFIG', payload: { planningModel: e.target.value } })}
-            className="w-full bg-neutral-950 border border-neutral-700 px-3 py-2 text-neutral-100 font-mono text-sm"
-          >
-            <option value="gemini-3-flash-preview">gemini-3-flash-preview (default)</option>
-            <option value="gemini-2.5-flash">gemini-2.5-flash</option>
-            <option value="gemini-flash-latest">gemini-flash-latest</option>
-          </select>
-        </div>
-      </>
-    )}
-  </div>
-
-  {/* SCHEDULE */}
-  <div className="space-y-3">
-    <div className="text-red-500 font-mono text-sm font-bold uppercase tracking-widest">Weekly Schedule</div>
-    <div className="grid grid-cols-1 gap-2">
-      <label className="flex items-center justify-between text-neutral-400 font-mono text-xs uppercase">
-        <span>Mode</span>
-        <select
-          value={state.programConfig.scheduleMode || 'weekday_fixed'}
-          onChange={e => dispatch({ type: 'SET_PROGRAM_CONFIG', payload: { scheduleMode: e.target.value } })}
-          className="bg-neutral-950 border border-neutral-700 px-2 py-1 text-neutral-100 font-mono text-xs"
-        >
-          <option value="weekday_fixed">WEEKDAY FIXED</option>
-          <option value="manual">MANUAL</option>
-        </select>
-      </label>
-      <label className="flex items-center justify-between text-neutral-400 font-mono text-xs uppercase">
-        <span>Planning Mode</span>
-        <select
-          value={state.programConfig.planningMode || 'ai_primary_guardrailed'}
-          onChange={e => dispatch({ type: 'SET_PROGRAM_CONFIG', payload: { planningMode: e.target.value } })}
-          className="bg-neutral-950 border border-neutral-700 px-2 py-1 text-neutral-100 font-mono text-xs"
-        >
-          <option value="ai_primary_guardrailed">AI PRIMARY + GUARDRAILS</option>
-          <option value="deterministic_fallback">DETERMINISTIC ONLY</option>
-        </select>
-      </label>
-      <label className="flex items-center justify-between text-neutral-400 font-mono text-xs uppercase">
-        <span>Daily Interview</span>
-        <select
-          value={state.programConfig.aiInterviewMode || 'daily_required'}
-          onChange={e => dispatch({ type: 'SET_PROGRAM_CONFIG', payload: { aiInterviewMode: e.target.value } })}
-          className="bg-neutral-950 border border-neutral-700 px-2 py-1 text-neutral-100 font-mono text-xs"
-        >
-          <option value="daily_required">REQUIRED</option>
-          <option value="manual">MANUAL</option>
-        </select>
-      </label>
-      <label className="flex items-center justify-between text-neutral-400 font-mono text-xs uppercase">
-        <span>AI Horizon (days)</span>
-        <select
-          value={state.programConfig.aiPlanHorizonDays || 7}
-          onChange={e => dispatch({ type: 'SET_PROGRAM_CONFIG', payload: { aiPlanHorizonDays: clamp(toNum(e.target.value, 7), 3, 7) } })}
-          className="bg-neutral-950 border border-neutral-700 px-2 py-1 text-neutral-100 font-mono text-xs"
-        >
-          <option value={7}>7</option>
-          <option value={6}>6</option>
-          <option value={5}>5</option>
-        </select>
-      </label>
-      <div className="grid grid-cols-2 gap-2">
-        <div>
-          <div className="text-neutral-500 font-mono text-xs uppercase mb-1">Weekday Morning</div>
-          <input
-            type="time"
-            value={state.programConfig.weekdayMorningTime || '07:30'}
-            onChange={e => dispatch({ type: 'SET_PROGRAM_CONFIG', payload: { weekdayMorningTime: e.target.value } })}
-            className="w-full bg-neutral-950 border border-neutral-700 px-2 py-2 text-neutral-100 font-mono text-xs"
-          />
-        </div>
-        <div>
-          <div className="text-neutral-500 font-mono text-xs uppercase mb-1">Weekday Evening</div>
-          <input
-            type="time"
-            value={state.programConfig.weekdayEveningTime || '19:00'}
-            onChange={e => dispatch({ type: 'SET_PROGRAM_CONFIG', payload: { weekdayEveningTime: e.target.value } })}
-            className="w-full bg-neutral-950 border border-neutral-700 px-2 py-2 text-neutral-100 font-mono text-xs"
-          />
-        </div>
-      </div>
-      <div>
-        <div className="text-neutral-500 font-mono text-xs uppercase mb-1">Session Grace (minutes)</div>
-        <input
-          type="number"
-          min="15"
-          max="240"
-          step="15"
-          value={state.programConfig.sessionGraceMinutes || 90}
-          onChange={e => dispatch({ type: 'SET_PROGRAM_CONFIG', payload: { sessionGraceMinutes: clamp(toNum(e.target.value, 90), 15, 240) } })}
-          className="w-full bg-neutral-950 border border-neutral-700 px-3 py-2 text-neutral-100 font-mono text-xs"
-        />
-        <div className="text-neutral-600 font-mono text-xs mt-1">Timezone: {state.programConfig.scheduleTimezone || 'UTC'}</div>
-      </div>
-    </div>
-    <div className="text-neutral-500 font-mono text-xs">Minutes available per day</div>
-    <div className="grid grid-cols-7 gap-1">
-      {['mon','tue','wed','thu','fri','sat','sun'].map(day => (
-        <div key={day} className="text-center">
-          <div className="text-neutral-500 font-mono text-xs uppercase mb-1">{day.slice(0,1).toUpperCase()}</div>
-          <input
-            type="number"
-            min="0" max="180" step="15"
-            value={state.profile.timeByDay?.[day] || 60}
-            onChange={e => dispatch({ type: 'UPDATE_PROFILE_FIELD', payload: { field: 'timeByDay', subfield: day, value: Number(e.target.value) }})}
-            className="w-full bg-neutral-950 border border-neutral-700 px-1 py-2 text-neutral-100 font-mono text-xs text-center"
-          />
-        </div>
-      ))}
-    </div>
-  </div>
-
-  {/* SKILL ASSESSMENTS */}
-  <div className="space-y-3">
-    <div className="text-red-500 font-mono text-sm font-bold uppercase tracking-widest">Skill Assessments</div>
-    {[
-      { key: 'maxPullUps', label: 'Max Pull-ups', unit: 'reps' },
-      { key: 'maxPushUps', label: 'Max Push-ups', unit: 'reps' },
-      { key: 'squatRM', label: 'Squat 1RM', unit: 'kg' },
-      { key: 'deadliftRM', label: 'Deadlift 1RM', unit: 'kg' },
-      { key: 'benchRM', label: 'Bench 1RM', unit: 'kg' },
-      { key: 'runningPaceEasy', label: 'Easy Run Pace', unit: 'min/km' },
-      { key: 'handstandHold', label: 'Handstand Hold', unit: 'sec' },
-    ].map(({ key, label, unit }) => (
-      <div key={key} className="flex items-center justify-between gap-3">
-        <div className="text-neutral-300 font-mono text-xs flex-1">{label}</div>
-        <div className="flex items-center gap-1">
-          <input
-            type="number" min="0"
-            value={state.profile.skillAssessments?.[key] || 0}
-            onChange={e => dispatch({ type: 'UPDATE_PROFILE_FIELD', payload: { field: 'skillAssessments', subfield: key, value: Number(e.target.value) }})}
-            className="w-20 bg-neutral-950 border border-neutral-700 px-2 py-1 text-neutral-100 font-mono text-sm text-right"
-          />
-          <span className="text-neutral-500 font-mono text-xs w-12">{unit}</span>
-        </div>
-      </div>
-    ))}
-  </div>
-
-  <div className="border border-neutral-800 p-4 space-y-3">
-    <div className="text-red-500 font-mono text-sm uppercase tracking-widest">PROGRAM CONFIG</div>
-    <div className="space-y-1">
-      <label className="text-neutral-500 font-mono text-xs uppercase">Coach style</label>
-      <select
-        value={state.programConfig.coachStyle}
-        onChange={e => dispatch({ type: 'SET_PROGRAM_CONFIG', payload: { coachStyle: e.target.value } })}
-        className="w-full bg-neutral-900 border border-neutral-800 px-3 py-3 text-neutral-100 font-mono text-base"
-      >
-        <option value="adaptive-flexible">Adaptive Flexible</option>
-        <option value="strict">Strict Progression</option>
-        <option value="light-touch">Light Touch</option>
-      </select>
-    </div>
-    <div className="space-y-1">
-      <label className="text-neutral-500 font-mono text-xs uppercase">Default session duration (min)</label>
-      <select
-        value={state.programConfig.defaultSessionMinutes}
-        onChange={e => dispatch({ type: 'SET_PROGRAM_CONFIG', payload: { defaultSessionMinutes: Number(e.target.value) } })}
-        className="w-full bg-neutral-900 border border-neutral-800 px-3 py-3 text-neutral-100 font-mono text-base"
-      >
-        <option value={45}>45</option>
-        <option value={60}>60</option>
-        <option value={90}>90</option>
-      </select>
-    </div>
-    <label className="flex items-center gap-2 text-neutral-400 font-mono text-xs uppercase">
-      <input
-        type="checkbox"
-        checked={!!state.programConfig.featureFlags.adaptiveEngine}
-        onChange={e => dispatch({ type: 'SET_PROGRAM_CONFIG', payload: { featureFlags: { adaptiveEngine: e.target.checked } } })}
-      />
-      Adaptive engine enabled
-    </label>
-    <label className="flex items-center gap-2 text-neutral-400 font-mono text-xs uppercase">
-      <input
-        type="checkbox"
-        checked={!!state.programConfig.featureFlags.legacyRandom}
-        onChange={e => dispatch({ type: 'SET_PROGRAM_CONFIG', payload: { featureFlags: { legacyRandom: e.target.checked } } })}
-      />
-      Legacy random fallback
-    </label>
-  </div>
-
-  {/* Block */}
-  <div className="border border-neutral-800 p-4 space-y-3">
-    <div className="text-red-500 font-mono text-sm uppercase tracking-widest">TRAINING BLOCK</div>
-    {['accumulation', 'intensification', 'realization', 'deload'].map(block => (
-      <button
-        key={block}
-        onClick={() => dispatch({ type: 'SET_PROFILE_FIELD', payload: { field: 'currentBlock', value: block } })}
-        className={`w-full py-2 font-mono text-xs uppercase text-left px-3 transition ${
-          state.profile.currentBlock === block
-            ? 'bg-red-500 text-neutral-950 font-bold'
-            : 'border border-neutral-800 text-neutral-400 hover:bg-neutral-900'
-        }`}
-      >
-        {block} {block === 'accumulation' ? '— RPE 7' : block === 'intensification' ? '— RPE 8' : block === 'realization' ? '— RPE 9' : '— RPE 5'}
-      </button>
-    ))}
-  </div>
-
-  <div className="border border-neutral-800 p-4 space-y-3">
-    <div className="text-red-500 font-mono text-sm uppercase tracking-widest">CONSTRAINTS & SAFETY</div>
-    {Object.entries(state.constraints.injuries).map(([key, value]) => (
-      <label key={key} className="flex items-center gap-2 text-neutral-400 font-mono text-xs uppercase">
-        <input
-          type="checkbox"
-          checked={!!value}
-          onChange={e => dispatch({ type: e.target.checked ? 'SET_CONSTRAINT_FLAG' : 'CLEAR_CONSTRAINT_FLAG', payload: { key } })}
-        />
-        Injury flag: {key}
-      </label>
-    ))}
-    <div className="space-y-1">
-      <label className="text-neutral-500 font-mono text-xs uppercase">Time override (minutes)</label>
-      <input
-        type="number"
-        value={state.constraints.timeOverrideMinutes || ''}
-        onChange={e => {
-          const value = e.target.value;
-          if (!value) {
-            dispatch({ type: 'CLEAR_CONSTRAINT_FLAG', payload: { key: 'timeOverrideMinutes' } });
-          } else {
-            dispatch({ type: 'SET_CONSTRAINT_FLAG', payload: { key: 'timeOverrideMinutes', value: Number(value) } });
-          }
-        }}
-        placeholder="Optional override"
-        className="w-full bg-neutral-900 border border-neutral-800 px-3 py-3 text-neutral-100 font-mono text-base"
-      />
-    </div>
-  </div>
-
-  {/* Export/Import */}
-  <div className="flex gap-2">
-    <button
-      onClick={handleExport}
-      className="flex-1 border border-neutral-700 py-3 font-mono text-xs uppercase hover:bg-neutral-900 transition flex items-center justify-center gap-2"
-    >
-      <Download size={14} /> EXPORT
-    </button>
-    <label className="flex-1 border border-neutral-700 py-3 font-mono text-xs uppercase hover:bg-neutral-900 transition flex items-center justify-center gap-2 cursor-pointer">
-      <Upload size={14} /> IMPORT
-      <input ref={fileInputRef} type="file" accept=".json" onChange={handleImport} className="hidden" />
-    </label>
-  </div>
-
-  {/* Reset */}
-  {!resetConfirm ? (
-    <button
-      onClick={() => setResetConfirm(true)}
-      className="w-full border border-red-900 py-3 font-mono text-xs uppercase text-red-700 hover:border-red-600 hover:text-red-500 transition"
-    >
-      RESET ALL DATA
-    </button>
-  ) : (
-    <div className="border border-red-500 p-4 space-y-3">
-      <div className="flex items-center gap-2 text-red-500 font-mono text-xs uppercase">
-        <AlertTriangle size={14} /> ARE YOU SURE? THIS CANNOT BE UNDONE.
-      </div>
-      <div className="flex gap-2">
-        <button
-          onClick={() => setResetConfirm(false)}
-          className="flex-1 border border-neutral-700 py-2 font-mono text-xs uppercase hover:bg-neutral-900 transition"
-        >
-          CANCEL
-        </button>
-        <button
-          onClick={() => { dispatch({ type: 'IMPORT_STATE', payload: createInitialState() }); setResetConfirm(false); }}
-          className="flex-1 bg-red-500 text-neutral-950 py-2 font-mono text-xs uppercase font-bold hover:bg-red-600 transition"
-        >
-          CONFIRM RESET
-        </button>
-      </div>
-    </div>
-  )}
-
-  {/* Stats */}
-  <div className="border border-neutral-800 p-4 space-y-2 text-neutral-600 font-mono text-xs">
-    <div>Total sessions: {state.profile.sessionCount}</div>
-    <div>Session logs stored: {state.sessionLogs.length}</div>
-    <div>Block: {state.profile.currentBlock} · Wk {state.profile.blockWeek}</div>
-    <div>Readiness: {state.readiness.score} ({state.readiness.band})</div>
-    <div>Control score: {state.athleteModel.controlScore}</div>
-    <div>Skip debt: {state.planState.skipDebtScore || 0} · Skipped streak: {state.planState.consecutiveSkippedSlots || 0}</div>
-    <div>Plan source: {getPlanSourceDisplayLabel(state.planState?.aiPlanSource || 'fallback_engine')} · Status: {state.planState?.aiPlanStatus || 'idle'}</div>
-    <div>Martial next phase: {String(state.planState.martialArtsNextPhase || state.progression?.martialArts?.currentPhase || 'technical').toUpperCase()}</div>
-    <div>Last adaptation: {state.progression.lastAdaptationSummary}</div>
-  </div>
-</div>
-  );
+function normalizeGeminiModel(model) {
+    const mappedModel = GEMINI_LEGACY_MODEL_MAP[model] || model;
+    return GEMINI_ALLOWED_MODELS.includes(mappedModel) ? mappedModel : GEMINI_DEFAULT_MODEL;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// ONBOARDING VIEW
-// ─────────────────────────────────────────────────────────────────────────────
+const INITIAL_STATE = {
+    version: 7,
+    view: 'home',
+    onboarded: false,
+    onboardStep: 0,
+    profile: {
+        name: '',
+        age: 25,
+        sex: 'male',
+        bodyweight: 75,
+        goal: '',
+        disciplines: [],
+        fitnessLevels: {},
+        daysPerWeek: 5,
+        sessionMinutes: 60,
+        accentColor: 'red',
+    },
+    programConfig: {
+        currentBlock: 'accumulation',
+        blockWeek: 1,
+        adaptationAggressiveness: 'moderate',
+        coachPersona: 'coach',
+    },
+    athleteModel: {
+        domainScores: {},
+        fatigueDebt: 0,
+        consistencyScore: 0,
+        readinessTrend: [],
+        streakDays: 0,
+        lastSessionDate: null,
+    },
+    progression: {
+        exercises: {},
+        skills: {},
+        stalledItems: [],
+        deloadRecommended: false,
+        highRPEStreak: 0,
+    },
+    readiness: {
+        inputs: { sleep: 7, stress: 5, soreness: 5, motivation: 7, energyLevel: 7 },
+        score: 70,
+        band: 'moderate',
+        lastUpdated: null,
+    },
+    muscleRecovery: createMuscleRecovery(),
+    aiConfig: {
+        enabled: false,
+        apiKey: '',
+        model: GEMINI_DEFAULT_MODEL,
+        endpoint: 'https://generativelanguage.googleapis.com/v1beta/models',
+    },
+    aiMemory: {
+        coachingNotes: [],
+        weeklySummary: null,
+        weeklyGoalCheck: null,
+        lastSummaryAt: null,
+        chatHistory: [],
+        preBrief: null,
+        postSessionSummary: null,
+    },
+    planState: {
+        recommendation: null,
+        secondaryRec: null,
+        progressionPrompts: [],
+    },
+    constraints: {
+        injuries: { shoulder: false, back: false, knee: false, ankle: false, wrist: false },
+        blockedPatterns: [],
+        customSubstitutions: {},
+    },
+    sessionLogs: [],
+    activeSession: null,
+    currentSessionType: null,
+    decisionLog: [],
+};
 
+// ─── STATE MIGRATION ─────────────────────────────────────────────────────────
+function migrateState(saved) {
+    const raw = (saved && typeof saved === 'object') ? saved : {};
+    const isLegacy = typeof raw.version !== 'number' || raw.version < 7;
+    const legacyProfile = raw.profile || {};
+    const legacyLogs = Array.isArray(raw.sessionLogs) ? raw.sessionLogs
+        : (Array.isArray(raw.logs) ? raw.logs : []);
+    const migratedLogs = legacyLogs.map((log, i) => mapLegacySessionLog(log, i)).filter(Boolean)
+        .sort((a, b) => b.timestamp - a.timestamp);
+    const inferredDisciplines = inferDisciplines(legacyProfile.disciplines, migratedLogs);
+    const domainScoresFromLogs = buildDomainScoresFromLogs(migratedLogs, inferredDisciplines);
+    const readinessInputs = normalizeReadinessInputs(raw.readiness?.inputs || {});
+    const source = isLegacy ? {
+        ...raw,
+        version: 7,
+        profile: {
+            ...(raw.profile || {}),
+            disciplines: inferredDisciplines,
+            goal: raw.profile?.goal || raw.goal || '',
+        },
+        sessionLogs: migratedLogs.length ? migratedLogs : (Array.isArray(raw.sessionLogs) ? raw.sessionLogs : []),
+        readiness: {
+            ...(raw.readiness || {}),
+            inputs: readinessInputs,
+        },
+        athleteModel: {
+            ...(raw.athleteModel || {}),
+            domainScores: Object.keys(raw.athleteModel?.domainScores || {}).length ? raw.athleteModel.domainScores : domainScoresFromLogs,
+        },
+        programConfig: {
+            ...(raw.programConfig || {}),
+            coachPersona: raw.programConfig?.coachPersona || (raw.programConfig?.coachStyle === 'silent' ? 'silent' : undefined),
+        },
+        planState: {
+            ...(raw.planState || {}),
+            secondaryRec: raw.planState?.secondaryRec || raw.planState?.secondaryRecommendation || null,
+        },
+    } : raw;
+
+    const s = { ...INITIAL_STATE, ...source };
+    s.profile = { ...INITIAL_STATE.profile, ...(source.profile || {}) };
+    s.programConfig = { ...INITIAL_STATE.programConfig, ...(source.programConfig || {}) };
+    s.athleteModel = {
+        ...INITIAL_STATE.athleteModel,
+        ...(source.athleteModel || {}),
+        domainScores: {
+            ...(INITIAL_STATE.athleteModel.domainScores || {}),
+            ...(source.athleteModel?.domainScores || {}),
+        },
+    };
+    s.progression = { ...INITIAL_STATE.progression, ...(source.progression || {}) };
+    if (!s.progression.exercises) s.progression.exercises = {};
+    if (!s.progression.skills) s.progression.skills = {};
+    if (!s.progression.stalledItems) s.progression.stalledItems = [];
+    s.readiness = { ...INITIAL_STATE.readiness, ...(source.readiness || {}) };
+    s.readiness.inputs = normalizeReadinessInputs(source.readiness?.inputs || {});
+    if (!s.muscleRecovery) s.muscleRecovery = createMuscleRecovery();
+    s.aiConfig = { ...INITIAL_STATE.aiConfig, ...(source.aiConfig || {}) };
+    s.aiConfig.model = normalizeGeminiModel(s.aiConfig.model);
+    s.aiMemory = { ...INITIAL_STATE.aiMemory, ...(source.aiMemory || {}) };
+    if (!Array.isArray(s.aiMemory.chatHistory)) s.aiMemory.chatHistory = [];
+    s.aiMemory.preBrief = s.aiMemory.preBrief || null;
+    s.aiMemory.postSessionSummary = s.aiMemory.postSessionSummary || null;
+    s.planState = { ...INITIAL_STATE.planState, ...(source.planState || {}) };
+    if (!s.planState.secondaryRec && source.planState?.secondaryRecommendation) {
+        s.planState.secondaryRec = source.planState.secondaryRecommendation;
+    }
+    s.constraints = { ...INITIAL_STATE.constraints, ...(source.constraints || {}) };
+    s.constraints.injuries = { ...INITIAL_STATE.constraints.injuries, ...(source.constraints?.injuries || {}) };
+    if (!Array.isArray(s.constraints.blockedPatterns)) s.constraints.blockedPatterns = [];
+    if (!s.constraints.customSubstitutions) s.constraints.customSubstitutions = {};
+    if (!Array.isArray(s.sessionLogs)) s.sessionLogs = [];
+    if (!Array.isArray(s.decisionLog)) s.decisionLog = [];
+    if (!s.profile.disciplines || !s.profile.disciplines.length) {
+        s.profile.disciplines = inferDisciplines([], s.sessionLogs);
+    }
+    if (!Object.keys(s.athleteModel.domainScores || {}).length) {
+        s.athleteModel.domainScores = buildDomainScoresFromLogs(s.sessionLogs, s.profile.disciplines);
+    }
+    if (typeof s.version !== 'number' || s.version < 7) s.version = 7;
+    return s;
+}
+
+// ─── REDUCER ─────────────────────────────────────────────────────────────────
+function appReducer(state, action) {
+    switch (action.type) {
+
+        case 'SET_VIEW':
+            return { ...state, view: action.view };
+
+        case 'NEXT_ONBOARD_STEP':
+            return { ...state, onboardStep: state.onboardStep + 1 };
+
+        case 'PREV_ONBOARD_STEP':
+            return { ...state, onboardStep: Math.max(0, state.onboardStep - 1) };
+
+        case 'SET_ONBOARD_PROFILE':
+            return { ...state, profile: { ...state.profile, ...action.fields } };
+
+        case 'COMPLETE_ONBOARDING': {
+            const { profile } = action;
+            const accentColor = profile.accentColor || 'red';
+            applyAccent(accentColor);
+            const domainScores = {};
+            profile.disciplines.forEach(d => { domainScores[d] = { sessions: 0, level: 1, trend: [] }; });
+            const skillsInit = buildInitialSkillState(profile.disciplines);
+            const currentBlock = getDefaultBlockForGoal(profile.goal);
+            const coachPersona = getDefaultCoachPersona(profile.goal, profile.fitnessLevels);
+            const adaptationAggressiveness = getDefaultAdaptation(profile.goal, profile.fitnessLevels);
+            const recommendation = profile.disciplines[0] || 'gym';
+            return {
+                ...state,
+                onboarded: true,
+                profile: { ...state.profile, ...profile },
+                athleteModel: { ...state.athleteModel, domainScores },
+                progression: { ...state.progression, skills: skillsInit },
+                programConfig: { ...state.programConfig, currentBlock, blockWeek: 1, coachPersona, adaptationAggressiveness },
+                planState: { ...state.planState, recommendation, secondaryRec: null },
+            };
+        }
+
+        case 'SET_PROFILE_FIELD':
+            if (action.key === 'disciplines') {
+                const nextDisciplines = Array.isArray(action.value) ? action.value : state.profile.disciplines;
+                const baseSkills = buildInitialSkillState(nextDisciplines);
+                const mergedSkills = { ...baseSkills, ...(state.progression.skills || {}) };
+                return {
+                    ...state,
+                    profile: { ...state.profile, disciplines: nextDisciplines },
+                    progression: { ...state.progression, skills: mergedSkills },
+                };
+            }
+            return { ...state, profile: { ...state.profile, [action.key]: action.value } };
+
+        case 'APPLY_ACCENT': {
+            applyAccent(action.color);
+            return { ...state, profile: { ...state.profile, accentColor: action.color } };
+        }
+
+        case 'SET_READINESS':
+            return {
+                ...state,
+                readiness: {
+                    ...state.readiness,
+                    inputs: normalizeReadinessInputs({ ...state.readiness.inputs, ...action.inputs }),
+                    ...action.derived,
+                    lastUpdated: Date.now(),
+                },
+            };
+
+        case 'SET_AI_CONFIG': {
+            const nextAIConfig = { ...state.aiConfig, ...(action.fields || {}) };
+            if (Object.prototype.hasOwnProperty.call(action.fields || {}, 'model')) {
+                nextAIConfig.model = normalizeGeminiModel(action.fields.model);
+            }
+            return { ...state, aiConfig: nextAIConfig };
+        }
+
+        case 'SET_CHAT_HISTORY':
+            return { ...state, aiMemory: { ...state.aiMemory, chatHistory: action.history.slice(-30) } };
+
+        case 'SET_PRE_BRIEF':
+            return { ...state, aiMemory: { ...state.aiMemory, preBrief: action.brief } };
+
+        case 'SET_WEEKLY_SUMMARY':
+            return {
+                ...state,
+                aiMemory: {
+                    ...state.aiMemory,
+                    weeklySummary: action.summary,
+                    weeklyGoalCheck: action.goalCheck || state.aiMemory.weeklyGoalCheck,
+                    lastSummaryAt: Date.now(),
+                },
+            };
+
+        case 'SET_WEEKLY_GOAL_CHECK':
+            return { ...state, aiMemory: { ...state.aiMemory, weeklyGoalCheck: action.payload } };
+
+        case 'SET_POST_SESSION_SUMMARY':
+            return { ...state, aiMemory: { ...state.aiMemory, postSessionSummary: action.summary } };
+
+        case 'START_SESSION': {
+            const { sessionType, exercises, maSubtype } = action;
+            return {
+                ...state,
+                activeSession: {
+                    type: sessionType,
+                    maSubtype: maSubtype || null,
+                    exercises: exercises.map((ex, i) => ({ ...ex, id: `${sessionType}-${i}`, done: false, setsCompleted: 0, topMetric: '', effortRPE: null, pain: false })),
+                    startedAt: Date.now(),
+                },
+                currentSessionType: sessionType,
+                aiMemory: { ...state.aiMemory, preBrief: null },
+            };
+        }
+
+        case 'TOGGLE_EXERCISE_DONE': {
+            if (!state.activeSession) return state;
+            const exercises = state.activeSession.exercises.map((ex, i) =>
+                i === action.idx ? { ...ex, done: !ex.done, setsCompleted: !ex.done ? (ex.sets || 3) : 0 } : ex
+            );
+            return { ...state, activeSession: { ...state.activeSession, exercises } };
+        }
+
+        case 'SET_EXERCISE_LOG': {
+            if (!state.activeSession) return state;
+            const exercises = state.activeSession.exercises.map((ex, i) =>
+                i === action.idx ? { ...ex, ...action.fields } : ex
+            );
+            return { ...state, activeSession: { ...state.activeSession, exercises } };
+        }
+
+        case 'SWAP_EXERCISE': {
+            if (!state.activeSession) return state;
+            const exercises = state.activeSession.exercises.map((ex, i) =>
+                i === action.idx ? { ...action.replacement, id: ex.id, done: false, setsCompleted: 0, topMetric: '', effortRPE: null, pain: false } : ex
+            );
+            return { ...state, activeSession: { ...state.activeSession, exercises } };
+        }
+
+        case 'COMPLETE_SESSION': {
+            const { rpe, recovery, energyLevel: energyRating, notes } = action;
+            const session = state.activeSession;
+            if (!session) return state;
+
+            const now = Date.now();
+            const log = {
+                id: `log-${now}`,
+                type: session.type,
+                maSubtype: session.maSubtype,
+                timestamp: now,
+                duration: Math.round((now - session.startedAt) / 60000),
+                overallRPE: rpe,
+                recovery,
+                energyRating,
+                notes,
+                bodyweight: Number.isFinite(state.profile.bodyweight) ? state.profile.bodyweight : null,
+                exerciseResults: session.exercises.map(ex => ({
+                    name: ex.name, done: ex.done, setsCompleted: ex.setsCompleted,
+                    topMetric: ex.topMetric, effortRPE: ex.effortRPE, pain: ex.pain,
+                })),
+            };
+
+            // Update muscle recovery
+            const muscleRecovery = { ...state.muscleRecovery };
+            session.exercises.forEach(ex => {
+                if (!ex.done || !ex.muscles) return;
+                ex.muscles.forEach(m => {
+                    if (muscleRecovery[m]) {
+                        muscleRecovery[m] = { ...muscleRecovery[m], lastTrained: now, status: rpe >= 8 ? 'fatigued' : 'recovering' };
+                    }
+                });
+            });
+
+            // Update domain scores
+            const domainScores = { ...state.athleteModel.domainScores };
+            if (domainScores[session.type]) {
+                const d = { ...domainScores[session.type] };
+                d.sessions = (d.sessions || 0) + 1;
+                d.trend = [...(d.trend || []).slice(-19), rpe];
+                domainScores[session.type] = d;
+            }
+
+            // Update progression per exercise
+            const exercises = { ...state.progression.exercises };
+            session.exercises.forEach(ex => {
+                if (!ex.done) return;
+                const prev = exercises[ex.name] || { level: 0, history: [], outcome: 'hold' };
+                let outcome = 'hold';
+                const targetRPE = BLOCK_CONFIG[state.programConfig.currentBlock]?.targetRPE || 7;
+                if (ex.pain) outcome = 'regress';
+                else if (ex.setsCompleted < (ex.sets || 3) * 0.6) outcome = 'regress';
+                else if (ex.effortRPE >= targetRPE + 2) outcome = 'regress';
+                else if (ex.setsCompleted >= (ex.sets || 3) && ex.effortRPE <= targetRPE - 1) outcome = 'advance';
+                exercises[ex.name] = {
+                    ...prev,
+                    lastDone: now,
+                    outcome,
+                    history: [...(prev.history || []).slice(-19), { date: now, effortRPE: ex.effortRPE, topMetric: ex.topMetric, outcome }],
+                };
+            });
+
+            // Streak calculation
+            const lastDate = state.athleteModel.lastSessionDate;
+            const today = new Date().toDateString();
+            const yesterday = new Date(Date.now() - 86400000).toDateString();
+            const lastDateStr = lastDate ? new Date(lastDate).toDateString() : null;
+            const newStreak = lastDateStr === yesterday ? (state.athleteModel.streakDays || 0) + 1
+                : lastDateStr === today ? (state.athleteModel.streakDays || 0)
+                    : 1;
+
+            // Coach note storage
+            const coachingNotes = state.aiMemory.coachingNotes ? [...state.aiMemory.coachingNotes] : [];
+
+            return {
+                ...state,
+                activeSession: null,
+                currentSessionType: null,
+                sessionLogs: [log, ...state.sessionLogs],
+                muscleRecovery,
+                athleteModel: { ...state.athleteModel, domainScores, lastSessionDate: now, streakDays: newStreak },
+                progression: { ...state.progression, exercises },
+                aiMemory: { ...state.aiMemory, coachingNotes: coachingNotes.slice(-20) },
+            };
+        }
+
+        case 'STORE_COACHING_NOTE': {
+            const notes = [...(state.aiMemory.coachingNotes || []), { ts: Date.now(), note: action.note, sessionType: action.sessionType }];
+            return { ...state, aiMemory: { ...state.aiMemory, coachingNotes: notes.slice(-20) } };
+        }
+
+        case 'SET_SKILL_LEVEL': {
+            const { discipline, skill, level } = action;
+            const skills = { ...state.progression.skills, [skill]: { ...(state.progression.skills[skill] || {}), level } };
+            return { ...state, progression: { ...state.progression, skills } };
+        }
+
+        case 'SET_BLOCK':
+            return { ...state, programConfig: { ...state.programConfig, currentBlock: action.block, blockWeek: 1 } };
+
+        case 'SET_PROGRAM_CONFIG':
+            return { ...state, programConfig: { ...state.programConfig, ...action.fields } };
+
+        case 'SET_CONSTRAINTS':
+            return { ...state, constraints: { ...state.constraints, ...action.fields } };
+
+        case 'SET_INJURIES':
+            return { ...state, constraints: { ...state.constraints, injuries: { ...state.constraints.injuries, ...action.injuries } } };
+
+        case 'SET_CUSTOM_SUBSTITUTION':
+            return {
+                ...state,
+                constraints: {
+                    ...state.constraints,
+                    customSubstitutions: {
+                        ...state.constraints.customSubstitutions,
+                        [action.from]: action.to,
+                    },
+                },
+            };
+
+        case 'SET_BLOCKED_PATTERNS':
+            return {
+                ...state,
+                constraints: {
+                    ...state.constraints,
+                    blockedPatterns: Array.isArray(action.patterns) ? action.patterns : state.constraints.blockedPatterns,
+                },
+            };
+
+        case 'IMPORT_STATE': {
+            const migrated = migrateState(action.data);
+            applyAccent(migrated.profile?.accentColor || 'red');
+            return migrated;
+        }
+
+        case 'IMPORT_V5_LOCAL_STATE': {
+            const migrated = migrateState(action.data);
+            applyAccent(migrated.profile?.accentColor || 'red');
+            return migrated;
+        }
+
+        case 'RESET_ALL':
+            applyAccent('red');
+            return { ...INITIAL_STATE };
+
+        default:
+            return state;
+    }
+}
+// ─── HELPERS ─────────────────────────────────────────────────────────────────
+function computeReadinessScore(inputs) {
+    const { sleep, stress, soreness, motivation, energyLevel } = normalizeReadinessInputs(inputs);
+    const raw = (sleep * 20) + ((10 - stress) * 10) + ((10 - soreness) * 10) + (motivation * 15) + (energyLevel * 15);
+    const score = Math.round(Math.min(100, raw * 100 / 700));
+    const band = score >= 75 ? 'high' : score >= 50 ? 'moderate' : 'low';
+    return { score, band };
+}
+
+function getMuscleStatus(recovery) {
+    if (!recovery.lastTrained) return 'fresh';
+    const hoursElapsed = (Date.now() - recovery.lastTrained) / 3600000;
+    if (hoursElapsed >= recovery.recoveryHours) return 'fresh';
+    if (hoursElapsed >= recovery.recoveryHours * 0.5) return 'recovering';
+    return 'fatigued';
+}
+
+function updateMuscleStatuses(muscleRecovery) {
+    const updated = {};
+    Object.entries(muscleRecovery).forEach(([k, v]) => {
+        updated[k] = { ...v, status: getMuscleStatus(v) };
+    });
+    return updated;
+}
+
+function getWeekStart() {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() - d.getDay());
+    return d.getTime();
+}
+
+function getSessionsThisWeek(sessionLogs) {
+    const ws = getWeekStart();
+    return sessionLogs.filter(l => l.timestamp >= ws);
+}
+
+function getSessionCountByType(sessionLogs, disciplines) {
+    const ws = getWeekStart();
+    const counts = {};
+    disciplines.forEach(d => { counts[d] = 0; });
+    sessionLogs.filter(l => l.timestamp >= ws).forEach(l => {
+        if (counts[l.type] !== undefined) counts[l.type]++;
+    });
+    return counts;
+}
+
+function computeSessionPriority(state) {
+    const { profile, athleteModel, readiness, muscleRecovery, sessionLogs } = state;
+    const { disciplines, daysPerWeek } = profile;
+    const weeklyCount = getSessionCountByType(sessionLogs, disciplines);
+    const scores = {};
+    const muscleStatuses = updateMuscleStatuses(muscleRecovery);
+
+    disciplines.forEach(disc => {
+        const done = weeklyCount[disc] || 0;
+        const target = FREQ_TARGETS[disc] || 2;
+        const deficit = Math.max(0, target - done);
+        let score = deficit * 30;
+
+        // Readiness modifier
+        if (readiness.band === 'low') {
+            if (disc === 'mobility' || disc === 'yoga') score += 20;
+            if (disc === 'gym') score -= 10;
+        }
+        if (readiness.band === 'high') {
+            if (disc === 'gym' || disc === 'hiit') score += 15;
+        }
+
+        // Muscle freshness (gym and calisthenics)
+        if (disc === 'gym' || disc === 'calisthenics') {
+            const freshMuscles = ['quads', 'chest', 'back', 'shoulders'].filter(m => muscleStatuses[m]?.status === 'fresh').length;
+            score += freshMuscles * 5;
+        }
+
+        // Last session recency (avoid repeating same type)
+        const lastOfType = sessionLogs.find(l => l.type === disc);
+        if (lastOfType) {
+            const hoursAgo = (Date.now() - lastOfType.timestamp) / 3600000;
+            if (hoursAgo < 16) score -= 40;
+        }
+
+        scores[disc] = Math.max(0, score);
+    });
+
+    const sorted = Object.entries(scores).sort((a, b) => b[1] - a[1]);
+    return sorted.length ? sorted[0][0] : disciplines[0];
+}
+
+function getExercisePoolForType(type, maSubtype) {
+    if (type === 'gym') return [...EXERCISE_DB.gym.legs, ...EXERCISE_DB.gym.upper, ...EXERCISE_DB.gym.fullBody];
+    if (type === 'mobility') return EXERCISE_DB.mobility;
+    if (type === 'martial_arts') {
+        const sub = maSubtype || 'striking';
+        return [...(EXERCISE_DB.martial_arts[sub] || EXERCISE_DB.martial_arts.striking), ...EXERCISE_DB.martial_arts.general];
+    }
+    if (type === 'calisthenics') return Object.values(EXERCISE_DB.calisthenics).flatMap((s) => s.levels);
+    if (type === 'running') return EXERCISE_DB.running;
+    if (type === 'cycling') return EXERCISE_DB.cycling;
+    if (type === 'yoga') return EXERCISE_DB.yoga;
+    if (type === 'hiit') return EXERCISE_DB.hiit;
+    return [];
+}
+
+function isExerciseBlocked(exercise, constraints) {
+    if (!exercise) return true;
+    const injuries = constraints?.injuries || {};
+    const blockedPatterns = Array.isArray(constraints?.blockedPatterns) ? constraints.blockedPatterns : [];
+    const injuredMuscles = Object.entries(injuries)
+        .filter(([, active]) => !!active)
+        .flatMap(([inj]) => INJURY_MUSCLE_MAP[inj] || []);
+    const touchesInjuredMuscle = (exercise.muscles || []).some((m) => injuredMuscles.includes(m));
+    const name = (exercise.name || '').toLowerCase();
+    const patternBlocked = blockedPatterns.some((p) => name.includes(String(p || '').toLowerCase()));
+    return touchesInjuredMuscle || patternBlocked;
+}
+
+function applySubstitutionsAndConstraints(exercises, type, state, maSubtype) {
+    const pool = getExercisePoolForType(type, maSubtype);
+    const byName = Object.fromEntries(pool.map((e) => [e.name, e]));
+    return exercises.map((ex) => {
+        const customTarget = state.constraints?.customSubstitutions?.[ex.name];
+        let candidate = ex;
+        if (customTarget && byName[customTarget]) {
+            candidate = { ...byName[customTarget], sets: ex.sets || byName[customTarget].sets || 3 };
+        }
+        if (!isExerciseBlocked(candidate, state.constraints)) return candidate;
+        const alt = pool.find((p) => p.name !== ex.name && !isExerciseBlocked(p, state.constraints));
+        if (!alt) return null;
+        return { ...alt, sets: ex.sets || alt.sets || 3 };
+    }).filter(Boolean);
+}
+
+function generateWorkout(type, state, maSubtype, timeMinutes) {
+    const exercises = [];
+    const time = timeMinutes || state.profile.sessionMinutes || 60;
+    const volume = time <= 30 ? 'low' : time <= 60 ? 'moderate' : 'high';
+    const sets = volume === 'low' ? 2 : volume === 'moderate' ? 3 : 4;
+
+    if (type === 'gym') {
+        const db = EXERCISE_DB.gym;
+        const legCount = volume === 'low' ? 1 : 2;
+        const upperCount = volume === 'low' ? 2 : volume === 'moderate' ? 3 : 4;
+        const fullCount = volume === 'high' ? 1 : 0;
+        const shuffle = arr => [...arr].sort(() => Math.random() - 0.5);
+        shuffle(db.legs).slice(0, legCount).forEach(ex => exercises.push({ ...ex, sets }));
+        shuffle(db.upper).slice(0, upperCount).forEach(ex => exercises.push({ ...ex, sets }));
+        shuffle(db.fullBody).slice(0, fullCount).forEach(ex => exercises.push({ ...ex, sets }));
+
+    } else if (type === 'calisthenics') {
+        const skills = state.progression.skills || {};
+        const db = EXERCISE_DB.calisthenics;
+        Object.entries(db).forEach(([skillKey, skillData]) => {
+            const skillLevel = skills[skillKey]?.level || 0;
+            const level = skillData.levels[Math.min(skillLevel, skillData.levels.length - 1)];
+            if (level) exercises.push({ ...level, sets, skillKey, levelIdx: skillLevel });
+        });
+
+    } else if (type === 'running') {
+        const pool = EXERCISE_DB.running;
+        const pick = Math.floor(Math.random() * pool.length);
+        exercises.push({ ...pool[pick] });
+
+    } else if (type === 'martial_arts') {
+        const sub = maSubtype || 'striking';
+        const db = EXERCISE_DB.martial_arts;
+        const pool = [...(db[sub] || db.striking), ...db.general];
+        const count = volume === 'low' ? 3 : volume === 'moderate' ? 4 : 5;
+        const shuffle = arr => [...arr].sort(() => Math.random() - 0.5);
+        shuffle(pool).slice(0, count).forEach(ex => exercises.push({ ...ex }));
+
+    } else if (type === 'mobility') {
+        const count = volume === 'low' ? 3 : volume === 'moderate' ? 4 : 5;
+        const shuffle = arr => [...arr].sort(() => Math.random() - 0.5);
+        shuffle(EXERCISE_DB.mobility).slice(0, count).forEach(ex => exercises.push({ ...ex }));
+
+    } else if (type === 'cycling') {
+        const pool = EXERCISE_DB.cycling;
+        const pick = Math.floor(Math.random() * pool.length);
+        exercises.push({ ...pool[pick] });
+
+    } else if (type === 'yoga') {
+        const count = volume === 'low' ? 2 : volume === 'moderate' ? 3 : 4;
+        const shuffle = arr => [...arr].sort(() => Math.random() - 0.5);
+        shuffle(EXERCISE_DB.yoga).slice(0, count).forEach(ex => exercises.push({ ...ex }));
+
+    } else if (type === 'hiit') {
+        const pool = EXERCISE_DB.hiit;
+        const pick = Math.floor(Math.random() * pool.length);
+        exercises.push({ ...pool[pick] });
+    } else if (type === 'custom') {
+        return [];
+    }
+
+    return applySubstitutionsAndConstraints(exercises, type, state, maSubtype);
+}
+
+function getSwapAlternatives(exercise, type, state, maSubtype) {
+    const pool = getExercisePoolForType(type, maSubtype);
+    return pool
+        .filter((e) => e.name !== exercise.name)
+        .filter((e) => !isExerciseBlocked(e, state.constraints))
+        .sort(() => Math.random() - 0.5)
+        .slice(0, 4);
+}
+
+function formatTime(ts) {
+    return new Date(ts).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+function formatDate(ts) {
+    return new Date(ts).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+}
+
+// ─── AI FUNCTIONS ─────────────────────────────────────────────────────────────
+async function callGeminiAPI(apiKey, endpoint, model, prompt) {
+    const normalizedModel = normalizeGeminiModel(model);
+    const url = `${endpoint}/${normalizedModel}:generateContent?key=${apiKey}`;
+    const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
+    });
+    if (!res.ok) throw new Error(`Gemini error: ${res.status}`);
+    const data = await res.json();
+    return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+}
+
+function buildCoachContext(state) {
+    const { profile, programConfig, readiness, muscleRecovery, sessionLogs, athleteModel } = state;
+    const weekSessions = getSessionsThisWeek(sessionLogs);
+    const muscleStatuses = updateMuscleStatuses(muscleRecovery);
+    const freshMuscles = Object.entries(muscleStatuses).filter(([, v]) => v.status === 'fresh').map(([k]) => k);
+    const fatiguedMuscles = Object.entries(muscleStatuses).filter(([, v]) => v.status === 'fatigued').map(([k]) => k);
+    const persona = COACH_PERSONAS[programConfig.coachPersona]?.label || 'Coach';
+    const goal = GOALS[profile.goal]?.label || profile.goal;
+
+    return `You are an AI personal fitness coach. Persona: ${persona}. 
+User: ${profile.name}, ${profile.age}yo, ${profile.bodyweight}kg, goal: ${goal}.
+Disciplines: ${profile.disciplines.map(d => DISCIPLINES[d]?.label).join(', ')}.
+Block: ${BLOCK_CONFIG[programConfig.currentBlock]?.label} (week ${programConfig.blockWeek}).
+Readiness today: ${readiness.score}/100 (${readiness.band}). Sleep:${readiness.inputs.sleep} Stress:${readiness.inputs.stress} Soreness:${readiness.inputs.soreness} Energy:${readiness.inputs.energyLevel}.
+Sessions this week: ${weekSessions.length}/${profile.daysPerWeek} target.
+Fresh muscles: ${freshMuscles.join(', ') || 'none tracked'}.
+Fatigued: ${fatiguedMuscles.join(', ') || 'none'}.
+Streak: ${athleteModel.streakDays} days.`;
+}
+
+async function callPreSessionBrief(state, sessionType, dispatch) {
+    const { aiConfig } = state;
+    if (!aiConfig.enabled || !aiConfig.apiKey) return;
+    const ctx = buildCoachContext(state);
+    const disc = DISCIPLINES[sessionType]?.label || sessionType;
+    const prompt = `${ctx}
+The user is about to start a ${disc} session (${state.profile.sessionMinutes} min).
+Give a 3-bullet pre-session brief. Bullets: 1) Today's focus cue. 2) Key adaptation insight based on muscle recovery/readiness. 3) One mindset or pacing note.
+Format: JSON {"focus":"...","insight":"...","mindset":"..."}. Return ONLY the JSON, no markdown.`;
+    try {
+        const text = await callGeminiAPI(aiConfig.apiKey, aiConfig.endpoint, aiConfig.model, prompt);
+        const clean = text.replace(/```json?/g, '').replace(/```/g, '').trim();
+        const parsed = JSON.parse(clean);
+        dispatch({ type: 'SET_PRE_BRIEF', brief: parsed });
+    } catch (e) { }
+}
+
+async function callPostSessionSummary(state, sessionLog, dispatch) {
+    const { aiConfig } = state;
+    if (!aiConfig.enabled || !aiConfig.apiKey) return null;
+    const ctx = buildCoachContext(state);
+    const prompt = `${ctx}
+User just completed a ${DISCIPLINES[sessionLog.type]?.label || sessionLog.type} session.
+Duration: ${sessionLog.duration} min. Overall RPE: ${sessionLog.overallRPE}/10. Recovery: ${sessionLog.recovery}/10. Notes: "${sessionLog.notes || 'none'}".
+Exercises completed: ${sessionLog.exerciseResults.filter(e => e.done).map(e => e.name).join(', ')}.
+Give a short 3-part coaching summary. Be direct, no filler.
+Format: JSON {"verdict":"...","insight":"...","nextFocus":"..."}. Return ONLY the JSON, no markdown.`;
+    try {
+        const text = await callGeminiAPI(aiConfig.apiKey, aiConfig.endpoint, aiConfig.model, prompt);
+        const clean = text.replace(/```json?/g, '').replace(/```/g, '').trim();
+        const parsed = JSON.parse(clean);
+        dispatch({ type: 'STORE_COACHING_NOTE', note: parsed, sessionType: sessionLog.type });
+        dispatch({ type: 'SET_POST_SESSION_SUMMARY', summary: parsed });
+        return parsed;
+    } catch (e) {
+        return null;
+    }
+}
+
+async function callWeeklySummary(state, dispatch) {
+    const { aiConfig } = state;
+    if (!aiConfig.enabled || !aiConfig.apiKey) return;
+    const week = getSessionsThisWeek(state.sessionLogs);
+    if (week.length < 2) return;
+    const last = state.aiMemory.lastSummaryAt;
+    if (last && (Date.now() - last) < 6 * 24 * 3600 * 1000) return;
+    const ctx = buildCoachContext(state);
+    const details = week.map(s => `${DISCIPLINES[s.type]?.label}: RPE ${s.overallRPE}, ${s.duration}min`).join(' | ');
+    const goalCheck = computeWeeklyGoalCheckFromState(state);
+    const prompt = `${ctx}
+This week's sessions (${week.length}): ${details}.
+Weekly goal progress: ${goalCheck.completed}/${goalCheck.target} (${goalCheck.percent}%).
+Write a weekly training summary. Be concise and actionable.
+Format: JSON {"headline":"...","wins":["...","..."],"concerns":["..."],"nextWeekFocus":"...","goalCheck":{"status":"on-track|close|behind","percent":80}}. Return ONLY the JSON, no markdown.`;
+    try {
+        const text = await callGeminiAPI(aiConfig.apiKey, aiConfig.endpoint, aiConfig.model, prompt);
+        const clean = text.replace(/```json?/g, '').replace(/```/g, '').trim();
+        const parsed = JSON.parse(clean);
+        const mergedGoalCheck = parsed.goalCheck ? {
+            ...goalCheck,
+            ...parsed.goalCheck,
+            percent: Number.isFinite(parsed.goalCheck.percent) ? parsed.goalCheck.percent : goalCheck.percent,
+        } : goalCheck;
+        dispatch({ type: 'SET_WEEKLY_SUMMARY', summary: parsed, goalCheck: mergedGoalCheck });
+        dispatch({ type: 'SET_WEEKLY_GOAL_CHECK', payload: mergedGoalCheck });
+    } catch (e) { }
+}
+
+async function callChatMessage(state, message, history, dispatch) {
+    const { aiConfig } = state;
+    if (!aiConfig.enabled || !aiConfig.apiKey) return 'AI coach disabled. Enable it in Settings with a Gemini API key.';
+    const ctx = buildCoachContext(state);
+    const histText = history.slice(-8).map(m => `${m.role === 'user' ? 'User' : 'Coach'}: ${m.text}`).join('\n');
+    const prompt = `${ctx}\n\nConversation:\n${histText}\nUser: ${message}\n\nRespond as their fitness coach. Be direct, specific, and practical. 2-4 sentences max unless explaining something complex.`;
+    try {
+        return await callGeminiAPI(aiConfig.apiKey, aiConfig.endpoint, aiConfig.model, prompt);
+    } catch (e) {
+        return `Connection error: ${e.message}. Check your API key in Settings.`;
+    }
+}
+
+async function callAIGreeting(state) {
+    const { aiConfig } = state;
+    if (!aiConfig.enabled || !aiConfig.apiKey) return '';
+    const ctx = buildCoachContext(state);
+    const prompt = `${ctx}
+Write one short greeting for the user (max 20 words), with one actionable training hint for today. No markdown.`;
+    try {
+        const text = await callGeminiAPI(aiConfig.apiKey, aiConfig.endpoint, aiConfig.model, prompt);
+        return text.trim();
+    } catch {
+        return '';
+    }
+}
+
+// ─── SVG ICONS ────────────────────────────────────────────────────────────────
+const Icon = {
+    Home: (p = {}) => React.createElement('svg', { width: 20, height: 20, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round', ...p }, React.createElement('path', { d: 'M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z' }), React.createElement('polyline', { points: '9 22 9 12 15 12 15 22' })),
+    Train: (p = {}) => React.createElement('svg', { width: 20, height: 20, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round', ...p }, React.createElement('path', { d: 'M6 5v14M18 5v14M6 8h12M6 16h12' })),
+    Chart: (p = {}) => React.createElement('svg', { width: 20, height: 20, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round', ...p }, React.createElement('polyline', { points: '22 12 18 12 15 21 9 3 6 12 2 12' })),
+    List: (p = {}) => React.createElement('svg', { width: 20, height: 20, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round', ...p }, React.createElement('line', { x1: 8, y1: 6, x2: 21, y2: 6 }), React.createElement('line', { x1: 8, y1: 12, x2: 21, y2: 12 }), React.createElement('line', { x1: 8, y1: 18, x2: 21, y2: 18 }), React.createElement('line', { x1: 3, y1: 6, x2: 3.01, y2: 6 }), React.createElement('line', { x1: 3, y1: 12, x2: 3.01, y2: 12 }), React.createElement('line', { x1: 3, y1: 18, x2: 3.01, y2: 18 })),
+    Settings: (p = {}) => React.createElement('svg', { width: 20, height: 20, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round', ...p }, React.createElement('circle', { cx: 12, cy: 12, r: 3 }), React.createElement('path', { d: 'M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 10-2.83-2.83l-.06.06A1.65 1.65 0 0015 14.1a1.65 1.65 0 00-1.82-.33l-.09.06A1.65 1.65 0 0012 13a1.65 1.65 0 00-.91.46l-.09.06a1.65 1.65 0 00-1.82.33 1.65 1.65 0 00-.33 1.82l.06.09A1.65 1.65 0 009 17a1.65 1.65 0 00-.46.91l-.06.09a2 2 0 102.83 2.83l.06-.06A1.65 1.65 0 0013 20.9a1.65 1.65 0 001.82.33l.09-.06A1.65 1.65 0 0016 21a1.65 1.65 0 00.91-.46l.09-.06a1.65 1.65 0 001.82-.33 1.65 1.65 0 00.33-1.82l-.06-.09A1.65 1.65 0 0019 17a1.65 1.65 0 00.46-.91l.06-.09z' })),
+    Zap: (p = {}) => React.createElement('svg', { width: 20, height: 20, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round', ...p }, React.createElement('polygon', { points: '13 2 3 14 12 14 11 22 21 10 12 10 13 2' })),
+    Check: (p = {}) => React.createElement('svg', { width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2.5, strokeLinecap: 'round', strokeLinejoin: 'round', ...p }, React.createElement('polyline', { points: '20 6 9 17 4 12' })),
+    X: (p = {}) => React.createElement('svg', { width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round', ...p }, React.createElement('line', { x1: 18, y1: 6, x2: 6, y2: 18 }), React.createElement('line', { x1: 6, y1: 6, x2: 18, y2: 18 })),
+    ChevronRight: (p = {}) => React.createElement('svg', { width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round', ...p }, React.createElement('polyline', { points: '9 18 15 12 9 6' })),
+    ChevronLeft: (p = {}) => React.createElement('svg', { width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round', ...p }, React.createElement('polyline', { points: '15 18 9 12 15 6' })),
+    Send: (p = {}) => React.createElement('svg', { width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round', ...p }, React.createElement('line', { x1: 22, y1: 2, x2: 11, y2: 13 }), React.createElement('polygon', { points: '22 2 15 22 11 13 2 9 22 2' })),
+    AlertTriangle: (p = {}) => React.createElement('svg', { width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round', ...p }, React.createElement('path', { d: 'M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z' }), React.createElement('line', { x1: 12, y1: 9, x2: 12, y2: 13 }), React.createElement('line', { x1: 12, y1: 17, x2: 12.01, y2: 17 })),
+    Refresh: (p = {}) => React.createElement('svg', { width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round', ...p }, React.createElement('polyline', { points: '23 4 23 10 17 10' }), React.createElement('path', { d: 'M20.49 15a9 9 0 11-2.12-9.36L23 10' })),
+    Bot: (p = {}) => React.createElement('svg', { width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round', ...p }, React.createElement('rect', { x: 3, y: 11, width: 18, height: 10, rx: 2 }), React.createElement('circle', { cx: 9, cy: 16, r: 1 }), React.createElement('circle', { cx: 15, cy: 16, r: 1 }), React.createElement('path', { d: 'M12 11V8M8 8h8' })),
+};
+// ─── ONBOARDING ───────────────────────────────────────────────────────────────
 function OnboardingView({ state, dispatch }) {
-  const [name, setName] = useState('');
-  const [age, setAge] = useState('');
-  const [bw, setBw] = useState('');
-  const [duration, setDuration] = useState(60);
-  const [coachStyle, setCoachStyle] = useState('adaptive-flexible');
-  const [useWearable, setUseWearable] = useState(false);
-  const [sleep, setSleep] = useState(7);
-  const [stress, setStress] = useState(4);
+    const { onboardStep } = state;
+    const [local, setLocal] = useState({
+        name: '', age: 25, sex: 'male', bodyweight: 75,
+        goal: '', disciplines: [],
+        fitnessLevels: {}, daysPerWeek: 5, sessionMinutes: 60, accentColor: 'red',
+    });
 
-  const next = () => {
-if (state.onboardStep === 0 && name.trim()) {
-  dispatch({ type: 'SET_PROFILE_FIELD', payload: { field: 'name', value: name.trim() } });
-  dispatch({ type: 'NEXT_ONBOARD_STEP' });
-} else if (state.onboardStep === 1 && age && bw) {
-  dispatch({ type: 'SET_PROFILE_FIELD', payload: { field: 'age', value: age } });
-  dispatch({ type: 'SET_PROFILE_FIELD', payload: { field: 'bodyweight', value: bw } });
-  dispatch({ type: 'NEXT_ONBOARD_STEP' });
-} else if (state.onboardStep === 2) {
-  dispatch({
-    type: 'SET_PROGRAM_CONFIG',
-    payload: {
-      coachStyle,
-      defaultSessionMinutes: duration,
-      useWearable,
-      featureFlags: { adaptiveEngine: true, legacyRandom: false },
-    },
-  });
-  dispatch({
-    type: 'SET_DAILY_READINESS',
-    payload: {
-      sleep,
-      stress,
-      soreness: 3,
-      motivation: 7,
-      hrvDelta: '',
-      restingHrDelta: '',
-    },
-  });
-  dispatch({ type: 'COMPLETE_ONBOARDING' });
-}
-  };
+    const update = fields => setLocal(p => ({ ...p, ...fields }));
+    const toggleDisc = d => {
+        const next = local.disciplines.includes(d)
+            ? local.disciplines.filter(x => x !== d)
+            : [...local.disciplines, d];
+        update({ disciplines: next });
+    };
+    const setFitnessLevel = (disc, lvl) => update({ fitnessLevels: { ...local.fitnessLevels, [disc]: lvl } });
 
-  return (
-<div className="bg-neutral-950 flex items-center justify-center p-6" style={{ minHeight: '100dvh' }}>
-  <div className="w-full max-w-sm space-y-6 border border-neutral-800 p-8">
-    <div>
-      <div className="text-red-500 font-mono text-2xl uppercase tracking-widest font-bold">MIYAMOTO</div>
-      <div className="text-neutral-600 font-mono text-xs mt-1">ADAPTIVE TRAINING SYSTEM</div>
-    </div>
+    const canNext = [
+        local.name.trim().length > 0,
+        local.goal !== '',
+        local.disciplines.length > 0,
+        true,
+        true,
+    ][onboardStep];
 
-    <div className="text-neutral-500 font-mono text-xs">STEP {state.onboardStep + 1} / 3</div>
+    const finish = () => {
+        dispatch({ type: 'COMPLETE_ONBOARDING', profile: local });
+    };
 
-    {state.onboardStep === 0 && (
-      <div className="space-y-4">
-        <div className="text-neutral-200 font-mono text-sm uppercase">What's your name?</div>
-        <input
-          type="text"
-          value={name}
-          autoFocus
-          onChange={e => setName(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && next()}
-          placeholder="ENTER NAME"
-          className="w-full bg-neutral-900 border border-neutral-800 px-4 py-3 text-neutral-100 font-mono text-base placeholder-neutral-700"
-        />
-        <button
-          onClick={next}
-          disabled={!name.trim()}
-          className="w-full bg-red-500 text-neutral-950 py-4 font-mono font-bold text-base uppercase tracking-widest disabled:opacity-40 active:bg-red-700"
-          style={{ WebkitTapHighlightColor: 'transparent' }}
-        >
-          NEXT
-        </button>
-      </div>
-    )}
+    const steps = ['You', 'Goal', 'Train', 'Level', 'Schedule'];
+    const progress = ((onboardStep + 1) / steps.length) * 100;
 
-    {state.onboardStep === 1 && (
-      <div className="space-y-4">
-        <div className="text-neutral-200 font-mono text-sm uppercase">Your stats</div>
-        <div className="space-y-1">
-          <label className="text-neutral-500 font-mono text-xs uppercase">Age</label>
-          <input
-            type="number"
-            value={age}
-            autoFocus
-            onChange={e => setAge(e.target.value)}
-            placeholder="AGE"
-            className="w-full bg-neutral-900 border border-neutral-800 px-4 py-3 text-neutral-100 font-mono text-base placeholder-neutral-700"
-          />
-        </div>
-        <div className="space-y-1">
-          <label className="text-neutral-500 font-mono text-xs uppercase">Bodyweight (kg)</label>
-          <input
-            type="number"
-            value={bw}
-            onChange={e => setBw(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && next()}
-            placeholder="BW IN KG"
-            className="w-full bg-neutral-900 border border-neutral-800 px-4 py-3 text-neutral-100 font-mono text-base placeholder-neutral-700"
-          />
-        </div>
-        <div className="flex gap-2">
-          <button
-            onClick={() => dispatch({ type: 'PREV_ONBOARD_STEP' })}
-            className="border border-neutral-700 px-4 py-3 font-mono text-xs uppercase hover:bg-neutral-900 transition"
-          >
-            <ArrowLeft size={14} />
-          </button>
-          <button
-            onClick={next}
-            disabled={!age || !bw}
-            className="flex-1 bg-red-500 text-neutral-950 py-4 font-mono font-bold text-base uppercase tracking-widest disabled:opacity-40 active:bg-red-700"
-            style={{ WebkitTapHighlightColor: 'transparent' }}
-          >
-            NEXT
-          </button>
-        </div>
-      </div>
-    )}
+    return (
+        <div className="min-h-screen flex flex-col" style={{ background: 'var(--bg)' }}>
+            <div className="flex-1 flex flex-col max-w-lg mx-auto w-full px-6 py-8">
+                {/* header */}
+                <div className="mb-8">
+                    <div className="text-xs font-semibold tracking-widest mb-1" style={{ color: 'var(--muted)' }}>
+                        STEP {onboardStep + 1} OF {steps.length} — {steps[onboardStep].toUpperCase()}
+                    </div>
+                    <div className="progress-bar mt-2">
+                        <div className="progress-fill" style={{ width: `${progress}%` }} />
+                    </div>
+                </div>
 
-    {state.onboardStep === 2 && (
-      <div className="space-y-4">
-        <div className="text-neutral-200 font-mono text-sm uppercase">Trainer Preferences</div>
-        <div className="space-y-1">
-          <label className="text-neutral-500 font-mono text-xs uppercase">Default session length</label>
-          <select
-            value={duration}
-            onChange={e => setDuration(Number(e.target.value))}
-            className="w-full bg-neutral-900 border border-neutral-800 px-4 py-3 text-neutral-100 font-mono text-base"
-          >
-            <option value={45}>45 MIN</option>
-            <option value={60}>60 MIN</option>
-            <option value={90}>90 MIN</option>
-          </select>
-        </div>
-        <div className="space-y-1">
-          <label className="text-neutral-500 font-mono text-xs uppercase">Coach style</label>
-          <select
-            value={coachStyle}
-            onChange={e => setCoachStyle(e.target.value)}
-            className="w-full bg-neutral-900 border border-neutral-800 px-4 py-3 text-neutral-100 font-mono text-base"
-          >
-            <option value="adaptive-flexible">ADAPTIVE FLEXIBLE</option>
-            <option value="strict">STRICT PROGRESSION</option>
-            <option value="light-touch">LIGHT TOUCH</option>
-          </select>
-        </div>
-        <div className="space-y-2">
-          <div className="text-neutral-500 font-mono text-xs uppercase">Baseline readiness</div>
-          <div>
-            <div className="flex justify-between text-xs font-mono text-neutral-500">
-              <span>SLEEP</span><span>{sleep}</span>
+                {/* Step 1 — Identity */}
+                {onboardStep === 0 && (
+                    <div className="fade-in">
+                        <h1 className="text-3xl font-bold mb-2">Welcome.</h1>
+                        <p className="text-sm mb-8" style={{ color: 'var(--muted)' }}>Let's build your personal AI coaching profile.</p>
+                        <div className="space-y-5">
+                            <div>
+                                <label className="block text-xs font-semibold tracking-wider mb-2" style={{ color: 'var(--muted)' }}>YOUR NAME</label>
+                                <input value={local.name} onChange={e => update({ name: e.target.value })}
+                                    placeholder="Enter your name"
+                                    className="w-full px-4 py-3 rounded-lg text-sm font-medium"
+                                    style={{ background: 'var(--card)', border: '1px solid var(--border)', color: 'var(--text)' }} />
+                            </div>
+                            <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label className="block text-xs font-semibold tracking-wider mb-2" style={{ color: 'var(--muted)' }}>AGE</label>
+                                    <input type="number" value={local.age} onChange={e => update({ age: +e.target.value })} min={13} max={80}
+                                        className="w-full px-4 py-3 rounded-lg text-sm font-medium"
+                                        style={{ background: 'var(--card)', border: '1px solid var(--border)', color: 'var(--text)' }} />
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-semibold tracking-wider mb-2" style={{ color: 'var(--muted)' }}>BODYWEIGHT (kg)</label>
+                                    <input type="number" value={local.bodyweight} onChange={e => update({ bodyweight: +e.target.value })} min={30} max={250}
+                                        className="w-full px-4 py-3 rounded-lg text-sm font-medium"
+                                        style={{ background: 'var(--card)', border: '1px solid var(--border)', color: 'var(--text)' }} />
+                                </div>
+                            </div>
+                            <div>
+                                <label className="block text-xs font-semibold tracking-wider mb-2" style={{ color: 'var(--muted)' }}>BIOLOGICAL SEX</label>
+                                <div className="grid grid-cols-2 gap-3">
+                                    {['male', 'female'].map(s => (
+                                        <button key={s} onClick={() => update({ sex: s })}
+                                            className="py-3 rounded-lg text-sm font-semibold capitalize transition-all"
+                                            style={local.sex === s ? { background: 'var(--accent)', color: '#fff', border: '1px solid transparent' } : { background: 'var(--card)', border: '1px solid var(--border)', color: 'var(--text)' }}>
+                                            {s}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                            <div>
+                                <label className="block text-xs font-semibold tracking-wider mb-2" style={{ color: 'var(--muted)' }}>ACCENT COLOR</label>
+                                <div className="flex gap-3 flex-wrap">
+                                    {Object.entries(ACCENT_COLORS).map(([k, v]) => (
+                                        <button key={k} onClick={() => { update({ accentColor: k }); applyAccent(k); }}
+                                            className="w-8 h-8 rounded-full border-2 transition-all"
+                                            style={{ background: v.css, borderColor: local.accentColor === k ? '#fff' : 'transparent' }} />
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {/* Step 2 — Goal */}
+                {onboardStep === 1 && (
+                    <div className="fade-in">
+                        <h1 className="text-3xl font-bold mb-2">Your goal.</h1>
+                        <p className="text-sm mb-8" style={{ color: 'var(--muted)' }}>This shapes your program and how your coach talks to you.</p>
+                        <div className="grid grid-cols-1 gap-3">
+                            {Object.entries(GOALS).map(([k, g]) => (
+                                <button key={k} onClick={() => update({ goal: k })}
+                                    className="flex items-center gap-4 p-4 rounded-xl text-left transition-all"
+                                    style={local.goal === k ? { background: 'var(--accent-dim)', border: '1px solid var(--accent-border)' } : { background: 'var(--card)', border: '1px solid var(--border)' }}>
+                                    <span className="text-2xl">{g.icon}</span>
+                                    <div>
+                                        <div className="font-semibold text-sm">{g.label}</div>
+                                        <div className="text-xs mt-0.5" style={{ color: 'var(--muted)' }}>{g.desc}</div>
+                                    </div>
+                                    {local.goal === k && <div className="ml-auto accent"><Icon.Check /></div>}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                )}
+
+                {/* Step 3 — Disciplines */}
+                {onboardStep === 2 && (
+                    <div className="fade-in">
+                        <h1 className="text-3xl font-bold mb-2">What do you train?</h1>
+                        <p className="text-sm mb-8" style={{ color: 'var(--muted)' }}>Select all that apply. Your coach will track each one.</p>
+                        <div className="grid grid-cols-1 gap-3">
+                            {Object.entries(DISCIPLINES).filter(([k]) => k !== 'custom').map(([k, d]) => {
+                                const active = local.disciplines.includes(k);
+                                return (
+                                    <button key={k} onClick={() => toggleDisc(k)}
+                                        className="flex items-center gap-4 p-4 rounded-xl text-left transition-all"
+                                        style={active ? { background: 'var(--accent-dim)', border: '1px solid var(--accent-border)' } : { background: 'var(--card)', border: '1px solid var(--border)' }}>
+                                        <span className="text-xl">{d.icon}</span>
+                                        <div className="flex-1">
+                                            <div className="font-semibold text-sm">{d.label}</div>
+                                            <div className="text-xs mt-0.5" style={{ color: 'var(--muted)' }}>{d.desc}</div>
+                                        </div>
+                                        <div className="w-5 h-5 rounded flex items-center justify-center flex-shrink-0"
+                                            style={active ? { background: 'var(--accent)' } : { border: '1px solid var(--border)' }}>
+                                            {active && <Icon.Check style={{ color: '#fff', width: 12, height: 12 }} />}
+                                        </div>
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    </div>
+                )}
+
+                {/* Step 4 — Fitness Level */}
+                {onboardStep === 3 && (
+                    <div className="fade-in">
+                        <h1 className="text-3xl font-bold mb-2">Your level.</h1>
+                        <p className="text-sm mb-8" style={{ color: 'var(--muted)' }}>Be honest — your coach adapts load and complexity to this.</p>
+                        <div className="space-y-5">
+                            {local.disciplines.map(disc => (
+                                <div key={disc} className="card p-4">
+                                    <div className="flex items-center gap-2 mb-3">
+                                        <span className="text-lg">{DISCIPLINES[disc].icon}</span>
+                                        <span className="font-semibold text-sm">{DISCIPLINES[disc].label}</span>
+                                    </div>
+                                    <div className="grid grid-cols-3 gap-2">
+                                        {['beginner', 'intermediate', 'advanced'].map(lvl => (
+                                            <button key={lvl} onClick={() => setFitnessLevel(disc, lvl)}
+                                                className="py-2 rounded text-xs font-semibold capitalize transition-all"
+                                                style={(local.fitnessLevels[disc] === lvl) ? { background: 'var(--accent)', color: '#fff' } : { background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }}>
+                                                {lvl}
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                )}
+
+                {/* Step 5 — Schedule */}
+                {onboardStep === 4 && (
+                    <div className="fade-in">
+                        <h1 className="text-3xl font-bold mb-2">Your schedule.</h1>
+                        <p className="text-sm mb-8" style={{ color: 'var(--muted)' }}>Your coach will use this to balance your weekly training load.</p>
+                        <div className="space-y-6">
+                            <div>
+                                <label className="block text-xs font-semibold tracking-wider mb-3" style={{ color: 'var(--muted)' }}>DAYS PER WEEK — {local.daysPerWeek} days</label>
+                                <input type="range" min={2} max={7} value={local.daysPerWeek}
+                                    onChange={e => update({ daysPerWeek: +e.target.value })}
+                                    className="w-full slider-accent" style={{ accentColor: 'var(--accent)' }} />
+                                <div className="flex justify-between text-xs mt-1" style={{ color: 'var(--muted)' }}>
+                                    <span>2 days</span><span>7 days</span>
+                                </div>
+                            </div>
+                            <div>
+                                <label className="block text-xs font-semibold tracking-wider mb-3" style={{ color: 'var(--muted)' }}>DEFAULT SESSION LENGTH — {local.sessionMinutes} min</label>
+                                <div className="grid grid-cols-4 gap-2">
+                                    {[30, 45, 60, 90].map(m => (
+                                        <button key={m} onClick={() => update({ sessionMinutes: m })}
+                                            className="py-3 rounded-lg text-sm font-semibold transition-all"
+                                            style={local.sessionMinutes === m ? { background: 'var(--accent)', color: '#fff' } : { background: 'var(--card)', border: '1px solid var(--border)', color: 'var(--text)' }}>
+                                            {m}m
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                            <div className="p-4 rounded-xl" style={{ background: 'var(--accent-dim)', border: '1px solid var(--accent-border)' }}>
+                                <div className="text-xs font-semibold mb-2 accent">YOUR PROGRAM SUMMARY</div>
+                                <div className="text-sm space-y-1" style={{ color: 'var(--muted)' }}>
+                                    <div>🎯 Goal: <span style={{ color: 'var(--text)' }}>{GOALS[local.goal]?.label}</span></div>
+                                    <div>🏋️ Disciplines: <span style={{ color: 'var(--text)' }}>{local.disciplines.map(d => DISCIPLINES[d].icon).join(' ')}</span></div>
+                                    <div>📅 Schedule: <span style={{ color: 'var(--text)' }}>{local.daysPerWeek}×/week · {local.sessionMinutes}min sessions</span></div>
+                                    <div>🚦 Block: <span style={{ color: 'var(--text)' }}>Accumulation (building base)</span></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {/* nav buttons */}
+                <div className="mt-8 flex gap-3">
+                    {onboardStep > 0 && (
+                        <button onClick={() => dispatch({ type: 'PREV_ONBOARD_STEP' })}
+                            className="btn-ghost flex items-center gap-2 px-4 py-3 text-sm font-semibold">
+                            <Icon.ChevronLeft /> Back
+                        </button>
+                    )}
+                    <button
+                        onClick={onboardStep === steps.length - 1 ? finish : () => dispatch({ type: 'NEXT_ONBOARD_STEP' })}
+                        disabled={!canNext}
+                        className="btn-accent flex-1 py-3 text-sm font-semibold flex items-center justify-center gap-2"
+                        style={!canNext ? { opacity: 0.4 } : {}}>
+                        {onboardStep === steps.length - 1 ? '🚀 Start Training' : <><span>Continue</span><Icon.ChevronRight /></>}
+                    </button>
+                </div>
             </div>
-            <input type="range" min="1" max="10" value={sleep} onChange={e => setSleep(Number(e.target.value))} className="w-full accent-red-500" />
-          </div>
-          <div>
-            <div className="flex justify-between text-xs font-mono text-neutral-500">
-              <span>STRESS</span><span>{stress}</span>
+        </div>
+    );
+}
+// ─── HOME VIEW ────────────────────────────────────────────────────────────────
+function HomeView({ state, dispatch }) {
+    const { profile, readiness, athleteModel, sessionLogs, aiConfig, aiMemory, programConfig, muscleRecovery } = state;
+    const [chatOpen, setChatOpen] = useState(false);
+    const [chatInput, setChatInput] = useState('');
+    const [chatLoading, setChatLoading] = useState(false);
+    const [summaryLoading, setSummaryLoading] = useState(false);
+    const [aiGreeting, setAiGreeting] = useState('');
+    const [greetingLoading, setGreetingLoading] = useState(false);
+    const chatEndRef = useRef(null);
+    const greetingRef = useRef('');
+
+    const weekSessions = useMemo(() => getSessionsThisWeek(sessionLogs), [sessionLogs]);
+    const weekProgress = Math.min(100, Math.round((weekSessions.length / (profile.daysPerWeek || 5)) * 100));
+    const recommendation = useMemo(() => computeSessionPriority(state), [state]);
+    const recDisc = DISCIPLINES[recommendation];
+    const block = BLOCK_CONFIG[programConfig.currentBlock];
+    const updatedMuscles = useMemo(() => updateMuscleStatuses(muscleRecovery), [muscleRecovery]);
+    const goalCheck = aiMemory.weeklyGoalCheck || computeWeeklyGoalCheckFromState(state);
+
+    useEffect(() => {
+        if (chatEndRef.current) chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }, [aiMemory.chatHistory]);
+
+    // Auto-generate weekly summary
+    useEffect(() => {
+        if (!aiConfig.enabled || !aiConfig.apiKey || summaryLoading) return;
+        if (weekSessions.length >= 2) {
+            const lastAt = aiMemory.lastSummaryAt;
+            if (!lastAt || (Date.now() - lastAt) > 6 * 24 * 3600 * 1000) {
+                setSummaryLoading(true);
+                callWeeklySummary(state, dispatch).finally(() => setSummaryLoading(false));
+            }
+        }
+    }, [sessionLogs.length, aiConfig.enabled, aiConfig.apiKey, aiMemory.lastSummaryAt, summaryLoading]);
+
+    useEffect(() => {
+        const greetingKey = `${new Date().toDateString()}-${readiness.band}-${profile.goal}-${weekSessions.length}`;
+        if (greetingRef.current === greetingKey) return;
+        greetingRef.current = greetingKey;
+        if (!aiConfig.enabled || !aiConfig.apiKey) {
+            setAiGreeting('');
+            return;
+        }
+        setGreetingLoading(true);
+        callAIGreeting(state)
+            .then((text) => setAiGreeting(text || ''))
+            .finally(() => setGreetingLoading(false));
+    }, [aiConfig.enabled, aiConfig.apiKey, readiness.band, profile.goal, weekSessions.length]);
+
+    const sendChat = async () => {
+        if (!chatInput.trim()) return;
+        const msg = chatInput.trim();
+        setChatInput('');
+        const userMsg = { role: 'user', text: msg, ts: Date.now() };
+        const newHist = [...(aiMemory.chatHistory || []), userMsg];
+        dispatch({ type: 'SET_CHAT_HISTORY', history: newHist });
+        setChatLoading(true);
+        const reply = await callChatMessage(state, msg, newHist, dispatch);
+        const coachMsg = { role: 'coach', text: reply, ts: Date.now() };
+        dispatch({ type: 'SET_CHAT_HISTORY', history: [...newHist, coachMsg] });
+        setChatLoading(false);
+    };
+
+    const fallbackGreeting = () => {
+        const hr = new Date().getHours();
+        const time = hr < 12 ? 'morning' : hr < 17 ? 'afternoon' : 'evening';
+        const name = profile.name ? `, ${profile.name}` : '';
+        if (readiness.band === 'high') return `Good ${time}${name}. You're firing on all cylinders today.`;
+        if (readiness.band === 'low') return `Good ${time}${name}. Prioritize recovery today — your body is signaling rest.`;
+        return `Good ${time}${name}. Solid baseline today — let's get some work done.`;
+    };
+
+    const muscleTagClass = s => s === 'fresh' ? 'tag-fresh' : s === 'recovering' ? 'tag-recovering' : 'tag-fatigued';
+
+    return (
+        <div className="scrollable safe-bottom" style={{ minHeight: '100vh', background: 'var(--bg)' }}>
+            <div className="max-w-lg mx-auto px-4 pt-6 pb-4 space-y-4">
+
+                {/* Greeting card */}
+                <div className="card-sharp p-4 fade-in">
+                    <div className="flex items-start justify-between gap-3">
+                        <div className="flex-1">
+                            <div className="text-xs font-semibold tracking-widest mb-1" style={{ color: 'var(--muted)' }}>🤖 AI COACH</div>
+                            <p className="text-sm font-medium leading-relaxed" style={{ color: 'var(--text)' }}>
+                                {greetingLoading ? 'Coach is checking your state...' : (aiGreeting || fallbackGreeting())}
+                            </p>
+                        </div>
+                        <button onClick={() => setChatOpen(p => !p)}
+                            className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold flex-shrink-0 transition-all"
+                            style={chatOpen ? { background: 'var(--accent)', color: '#fff' } : { background: 'var(--card)', border: '1px solid var(--border)', color: 'var(--text)' }}>
+                            <Icon.Bot /> Chat
+                        </button>
+                    </div>
+                </div>
+
+                {/* AI Chat Panel */}
+                {chatOpen && (
+                    <div className="card-sharp overflow-hidden fade-in">
+                        <div className="px-4 py-3 border-b" style={{ borderColor: 'var(--border)' }}>
+                            <div className="text-xs font-semibold tracking-widest accent">COACH CHAT</div>
+                            {!aiConfig.enabled && <div className="text-xs mt-1" style={{ color: 'var(--muted)' }}>Enable AI in Settings → AI Coach to use this feature</div>}
+                        </div>
+                        <div className="p-3 space-y-2 scrollable" style={{ maxHeight: 260, minHeight: 80 }}>
+                            {(aiMemory.chatHistory || []).length === 0 && (
+                                <div className="text-xs text-center py-4" style={{ color: 'var(--muted)' }}>Ask me anything about your training...</div>
+                            )}
+                            {(aiMemory.chatHistory || []).map((m, i) => (
+                                <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                                    <div className="max-w-[85%] px-3 py-2 rounded-xl text-xs leading-relaxed"
+                                        style={m.role === 'user'
+                                            ? { background: 'var(--accent)', color: '#fff' }
+                                            : { background: 'var(--card)', border: '1px solid var(--border)', color: 'var(--text)' }}>
+                                        {m.text}
+                                    </div>
+                                </div>
+                            ))}
+                            {chatLoading && (
+                                <div className="flex justify-start">
+                                    <div className="px-3 py-2 rounded-xl text-xs" style={{ background: 'var(--card)', border: '1px solid var(--border)' }}>
+                                        <span className="pulse" style={{ color: 'var(--muted)' }}>Thinking...</span>
+                                    </div>
+                                </div>
+                            )}
+                            <div ref={chatEndRef} />
+                        </div>
+                        <div className="p-3 border-t flex gap-2" style={{ borderColor: 'var(--border)' }}>
+                            <input value={chatInput} onChange={e => setChatInput(e.target.value)}
+                                onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); } }}
+                                placeholder="Ask your coach..."
+                                className="flex-1 px-3 py-2 rounded-lg text-xs"
+                                style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }} />
+                            <button onClick={sendChat} disabled={chatLoading || !chatInput.trim()}
+                                className="btn-accent px-3 py-2 rounded-lg"
+                                style={(!chatInput.trim() || chatLoading) ? { opacity: 0.4 } : {}}>
+                                <Icon.Send style={{ width: 14, height: 14 }} />
+                            </button>
+                        </div>
+                    </div>
+                )}
+
+                {/* Recommendation card */}
+                <div className="p-4 rounded-xl fade-in" style={{ background: 'var(--accent-dim)', border: '1px solid var(--accent-border)' }}>
+                    <div className="text-xs font-semibold tracking-widest mb-3" style={{ color: 'var(--muted)' }}>TODAY'S RECOMMENDATION</div>
+                    <div className="flex items-center gap-3 mb-3">
+                        <span className="text-3xl">{recDisc?.icon}</span>
+                        <div>
+                            <div className="text-lg font-bold">{recDisc?.label}</div>
+                            <div className="text-xs" style={{ color: 'var(--muted)' }}>{profile.sessionMinutes} min · {block?.label} · RPE {block?.targetRPE}</div>
+                        </div>
+                    </div>
+                    <button onClick={() => dispatch({ type: 'SET_VIEW', view: 'train' })}
+                        className="btn-accent w-full py-3 text-sm font-bold rounded-lg">
+                        START SESSION →
+                    </button>
+                </div>
+
+                {/* Weekly snapshot */}
+                <div className="card p-4 fade-in">
+                    <div className="flex items-center justify-between mb-3">
+                        <div className="text-xs font-semibold tracking-widest" style={{ color: 'var(--muted)' }}>WEEKLY PROGRESS</div>
+                        <div className="text-xs font-bold accent">{weekSessions.length}/{profile.daysPerWeek} sessions</div>
+                    </div>
+                    <div className="progress-bar mb-3">
+                        <div className="progress-fill" style={{ width: `${weekProgress}%` }} />
+                    </div>
+                    <div className="flex items-center gap-4 text-xs" style={{ color: 'var(--muted)' }}>
+                        <div>🔥 <span style={{ color: 'var(--text)', fontWeight: 600 }}>{athleteModel.streakDays || 0}</span> day streak</div>
+                        <div>📅 <span style={{ color: 'var(--text)', fontWeight: 600 }}>{weekProgress}%</span> goal</div>
+                        {sessionLogs.length > 0 && <div>⏱ Last: <span style={{ color: 'var(--text)', fontWeight: 600 }}>{formatTime(sessionLogs[0].timestamp)}</span></div>}
+                    </div>
+                </div>
+
+                {/* Discipline balance */}
+                {profile.disciplines.length > 0 && (
+                    <div className="card p-4 fade-in">
+                        <div className="text-xs font-semibold tracking-widest mb-3" style={{ color: 'var(--muted)' }}>THIS WEEK'S BALANCE</div>
+                        <div className="space-y-2">
+                            {profile.disciplines.map(disc => {
+                                const done = getSessionCountByType(sessionLogs, profile.disciplines)[disc] || 0;
+                                const target = FREQ_TARGETS[disc] || 2;
+                                const pct = Math.min(100, Math.round((done / target) * 100));
+                                return (
+                                    <div key={disc} className="flex items-center gap-3">
+                                        <span className="text-sm w-5 text-center">{DISCIPLINES[disc].icon}</span>
+                                        <div className="flex-1 progress-bar">
+                                            <div className="progress-fill" style={{ width: `${pct}%` }} />
+                                        </div>
+                                        <div className="text-xs mono w-10 text-right" style={{ color: 'var(--muted)' }}>{done}/{target}</div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+                )}
+
+                {/* Weekly AI Summary */}
+                {aiMemory.weeklySummary && (
+                    <div className="card-sharp p-4 fade-in">
+                        <div className="flex items-center gap-2 mb-3">
+                            <Icon.Zap className="accent" />
+                            <div className="text-xs font-semibold tracking-widest accent">WEEKLY RECAP</div>
+                        </div>
+                        <p className="text-sm font-semibold mb-3">{aiMemory.weeklySummary.headline}</p>
+                        {aiMemory.weeklySummary.wins?.length > 0 && (
+                            <div className="mb-2">
+                                <div className="text-xs font-semibold mb-1" style={{ color: '#22c55e' }}>✓ WINS</div>
+                                {aiMemory.weeklySummary.wins.map((w, i) => <div key={i} className="text-xs mb-0.5" style={{ color: 'var(--muted)' }}>{w}</div>)}
+                            </div>
+                        )}
+                        {aiMemory.weeklySummary.concerns?.length > 0 && (
+                            <div className="mb-2">
+                                <div className="text-xs font-semibold mb-1" style={{ color: '#f97316' }}>⚡ FOCUS</div>
+                                {aiMemory.weeklySummary.concerns.map((c, i) => <div key={i} className="text-xs mb-0.5" style={{ color: 'var(--muted)' }}>{c}</div>)}
+                            </div>
+                        )}
+                        {aiMemory.weeklySummary.nextWeekFocus && (
+                            <div className="text-xs font-medium mt-2 pt-2" style={{ borderTop: '1px solid var(--border)', color: 'var(--text)' }}>
+                                Next week: {aiMemory.weeklySummary.nextWeekFocus}
+                            </div>
+                        )}
+                        <div className="text-xs mt-2 pt-2 flex items-center justify-between" style={{ borderTop: '1px solid var(--border)', color: 'var(--muted)' }}>
+                            <span>Goal progress</span>
+                            <span style={{ color: 'var(--text)', fontWeight: 600 }}>
+                                {goalCheck.completed}/{goalCheck.target} ({goalCheck.percent}% · {goalCheck.status})
+                            </span>
+                        </div>
+                        {summaryLoading && <div className="text-xs pulse mt-2 accent">Refreshing recap...</div>}
+                    </div>
+                )}
+                {summaryLoading && !aiMemory.weeklySummary && (
+                    <div className="card-sharp p-4 text-center text-xs accent pulse fade-in">Generating weekly AI recap...</div>
+                )}
+
+                {/* Muscle Recovery */}
+                <div className="card p-4 fade-in">
+                    <div className="text-xs font-semibold tracking-widest mb-3" style={{ color: 'var(--muted)' }}>MUSCLE RECOVERY</div>
+                    <div className="flex flex-wrap gap-2">
+                        {Object.entries(updatedMuscles).map(([k, v]) => (
+                            <span key={k} className={`chip ${muscleTagClass(v.status)}`} style={{ fontSize: 11 }}>
+                                {k.replace(/([A-Z])/g, ' $1').toLowerCase()}
+                            </span>
+                        ))}
+                    </div>
+                </div>
+
+                {/* Readiness check */}
+                <ReadinessWidget state={state} dispatch={dispatch} />
+
+                {/* Recent sessions */}
+                {sessionLogs.length > 0 && (
+                    <div className="fade-in">
+                        <div className="text-xs font-semibold tracking-widest mb-3" style={{ color: 'var(--muted)' }}>RECENT SESSIONS</div>
+                        <div className="space-y-2">
+                            {sessionLogs.slice(0, 3).map((log, i) => (
+                                <div key={log.id || i} className="card p-3 flex items-center justify-between">
+                                    <div className="flex items-center gap-3">
+                                        <span className="text-lg">{DISCIPLINES[log.type]?.icon || '🏋️'}</span>
+                                        <div>
+                                            <div className="text-sm font-semibold">{DISCIPLINES[log.type]?.label || log.type}</div>
+                                            <div className="text-xs" style={{ color: 'var(--muted)' }}>{formatDate(log.timestamp)} · {log.duration}min</div>
+                                        </div>
+                                    </div>
+                                    <div className="text-right">
+                                        <div className="text-sm font-bold accent">RPE {log.overallRPE}</div>
+                                        <div className="text-xs" style={{ color: 'var(--muted)' }}>recovery {log.recovery}</div>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                )}
             </div>
-            <input type="range" min="1" max="10" value={stress} onChange={e => setStress(Number(e.target.value))} className="w-full accent-red-500" />
-          </div>
-          <label className="flex items-center gap-2 text-neutral-400 font-mono text-xs uppercase">
-            <input type="checkbox" checked={useWearable} onChange={e => setUseWearable(e.target.checked)} />
-            I use wearable metrics (optional)
-          </label>
         </div>
-        <div className="flex gap-2">
-          <button
-            onClick={() => dispatch({ type: 'PREV_ONBOARD_STEP' })}
-            className="border border-neutral-700 px-4 py-3 font-mono text-xs uppercase hover:bg-neutral-900 transition"
-          >
-            <ArrowLeft size={14} />
-          </button>
-          <button
-            onClick={next}
-            className="flex-1 bg-red-500 text-neutral-950 py-4 font-mono font-bold text-base uppercase tracking-widest active:bg-red-700"
-            style={{ WebkitTapHighlightColor: 'transparent' }}
-          >
-            START TRAINING
-          </button>
-        </div>
-      </div>
-    )}
-  </div>
-</div>
-  );
+    );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// APP ROOT
-// ─────────────────────────────────────────────────────────────────────────────
+function ReadinessWidget({ state, dispatch }) {
+    const [open, setOpen] = useState(false);
+    const [inputs, setInputs] = useState(normalizeReadinessInputs(state.readiness.inputs));
+    const { score, band } = state.readiness;
+    const bandColor = band === 'high' ? '#22c55e' : band === 'moderate' ? '#fbbf24' : '#ef4444';
 
-export default function App() {
-  const [state, dispatch] = useReducer(appReducer, INITIAL_STATE, (init) => {
+    const save = () => {
+        const derived = computeReadinessScore(inputs);
+        dispatch({ type: 'SET_READINESS', inputs, derived });
+        setOpen(false);
+    };
+
+    const labels = { sleep: 'Sleep Quality', stress: 'Stress Level', soreness: 'Muscle Soreness', motivation: 'Motivation', energyLevel: 'Energy Level' };
+    const inverted = ['stress', 'soreness'];
+
+    return (
+        <div className="card p-4 fade-in">
+            <div className="flex items-center justify-between mb-2" onClick={() => setOpen(p => !p)} style={{ cursor: 'pointer' }}>
+                <div>
+                    <div className="text-xs font-semibold tracking-widest" style={{ color: 'var(--muted)' }}>READINESS CHECK</div>
+                    <div className="flex items-center gap-2 mt-1">
+                        <div className="text-lg font-bold" style={{ color: bandColor }}>{score}/100</div>
+                        <span className="chip" style={{ fontSize: 10, color: bandColor, borderColor: bandColor + '50', background: bandColor + '15', padding: '2px 8px' }}>
+                            {band.toUpperCase()}
+                        </span>
+                    </div>
+                </div>
+                <Icon.ChevronRight style={{ transform: open ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.2s', color: 'var(--muted)' }} />
+            </div>
+            {open && (
+                <div className="border-t pt-4 mt-2 space-y-3 fade-in" style={{ borderColor: 'var(--border)' }}>
+                    {Object.entries(inputs).map(([k, v]) => (
+                        <div key={k}>
+                            <div className="flex justify-between text-xs mb-1">
+                                <span style={{ color: 'var(--muted)' }}>{labels[k]}</span>
+                                <span className="font-semibold">{v}/10 {inverted.includes(k) ? '(lower=better)' : ''}</span>
+                            </div>
+                            <input type="range" min={1} max={10} value={v}
+                                onChange={e => setInputs(p => ({ ...p, [k]: +e.target.value }))}
+                                className="w-full" style={{ accentColor: 'var(--accent)' }} />
+                        </div>
+                    ))}
+                    <button onClick={save} className="btn-accent w-full py-2 text-xs font-semibold rounded-lg mt-2">
+                        UPDATE READINESS
+                    </button>
+                </div>
+            )}
+        </div>
+    );
+}
+// ─── TRAIN VIEW ───────────────────────────────────────────────────────────────
+function TrainView({ state, dispatch }) {
+    const { activeSession, profile, aiConfig, aiMemory } = state;
+    const [selectedType, setSelectedType] = useState(null);
+    const [maSubtype, setMaSubtype] = useState('striking');
+    const [sessionMinutes, setSessionMinutes] = useState(profile.sessionMinutes || 60);
+    const [briefLoading, setBriefLoading] = useState(false);
+    const [swapIdx, setSwapIdx] = useState(null);
+    const [swapOptions, setSwapOptions] = useState([]);
+    const [showComplete, setShowComplete] = useState(false);
+    const [customDraft, setCustomDraft] = useState({ name: '', sets: 3, reps: '10', cue: '', muscles: '' });
+    const [customExercises, setCustomExercises] = useState([]);
+
+    const startSession = async (type, manualExercises = null) => {
+        const exercises = manualExercises || generateWorkout(type, state, maSubtype, sessionMinutes);
+        if (!exercises || !exercises.length) return;
+        dispatch({ type: 'START_SESSION', sessionType: type, exercises, maSubtype: type === 'martial_arts' ? maSubtype : null });
+        setSelectedType(null);
+        // Pre-session AI brief
+        if (aiConfig.enabled && aiConfig.apiKey) {
+            setBriefLoading(true);
+            await callPreSessionBrief({ ...state, profile: { ...state.profile, sessionMinutes } }, type, dispatch);
+            setBriefLoading(false);
+        }
+    };
+
+    const openSwap = (idx) => {
+        const ex = activeSession.exercises[idx];
+        setSwapOptions(getSwapAlternatives(ex, activeSession.type, state, activeSession.maSubtype));
+        setSwapIdx(idx);
+    };
+
+    const addCustomExercise = () => {
+        if (!customDraft.name.trim()) return;
+        const muscles = customDraft.muscles
+            .split(',')
+            .map((m) => m.trim())
+            .filter(Boolean);
+        const ex = {
+            name: customDraft.name.trim(),
+            sets: Math.max(1, Number(customDraft.sets) || 3),
+            reps: customDraft.reps || '10',
+            cue: customDraft.cue || 'Custom exercise',
+            muscles: muscles.length ? muscles : ['fullBody'],
+        };
+        setCustomExercises((prev) => [...prev, ex]);
+        setCustomDraft({ name: '', sets: 3, reps: '10', cue: '', muscles: '' });
+    };
+
+    // ── Discipline picker ──
+    if (!activeSession) {
+        return (
+            <div className="scrollable safe-bottom" style={{ minHeight: '100vh', background: 'var(--bg)' }}>
+                <div className="max-w-lg mx-auto px-4 pt-6 pb-4">
+                    <div className="mb-6">
+                        <h2 className="text-xl font-bold mb-1">Start Training</h2>
+                        <p className="text-sm" style={{ color: 'var(--muted)' }}>Choose your discipline and session length.</p>
+                    </div>
+
+                    {/* Time picker */}
+                    <div className="card p-4 mb-5">
+                        <div className="text-xs font-semibold tracking-widest mb-3" style={{ color: 'var(--muted)' }}>SESSION LENGTH</div>
+                        <div className="grid grid-cols-4 gap-2">
+                            {[30, 45, 60, 90].map(m => (
+                                <button key={m} onClick={() => setSessionMinutes(m)}
+                                    className="py-2 rounded-lg text-sm font-semibold transition-all"
+                                    style={sessionMinutes === m
+                                        ? { background: 'var(--accent)', color: '#fff' }
+                                        : { background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }}>
+                                    {m}m
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+
+                    {/* Discipline cards */}
+                    <div className="text-xs font-semibold tracking-widest mb-3" style={{ color: 'var(--muted)' }}>YOUR DISCIPLINES</div>
+                    <div className="space-y-3">
+                        <div className="card p-4 fade-in">
+                            <div className="flex items-center gap-2 mb-3">
+                                <span className="text-xl">🧩</span>
+                                <div className="font-semibold text-sm">Custom Session Builder</div>
+                            </div>
+                            <div className="grid grid-cols-2 gap-2 mb-2">
+                                <input value={customDraft.name} onChange={(e) => setCustomDraft((p) => ({ ...p, name: e.target.value }))}
+                                    placeholder="Exercise name"
+                                    className="col-span-2 px-3 py-2 rounded text-xs"
+                                    style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }} />
+                                <input type="number" min={1} value={customDraft.sets} onChange={(e) => setCustomDraft((p) => ({ ...p, sets: +e.target.value }))}
+                                    placeholder="Sets"
+                                    className="px-3 py-2 rounded text-xs"
+                                    style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }} />
+                                <input value={customDraft.reps} onChange={(e) => setCustomDraft((p) => ({ ...p, reps: e.target.value }))}
+                                    placeholder="Reps/Duration"
+                                    className="px-3 py-2 rounded text-xs"
+                                    style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }} />
+                                <input value={customDraft.cue} onChange={(e) => setCustomDraft((p) => ({ ...p, cue: e.target.value }))}
+                                    placeholder="Cue (optional)"
+                                    className="col-span-2 px-3 py-2 rounded text-xs"
+                                    style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }} />
+                                <input value={customDraft.muscles} onChange={(e) => setCustomDraft((p) => ({ ...p, muscles: e.target.value }))}
+                                    placeholder="Muscles CSV (e.g. quads,glutes)"
+                                    className="col-span-2 px-3 py-2 rounded text-xs"
+                                    style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }} />
+                            </div>
+                            <button onClick={addCustomExercise} className="btn-ghost w-full py-2 text-xs font-semibold mb-2">Add Exercise</button>
+                            {customExercises.length > 0 && (
+                                <div className="space-y-1.5 mb-3">
+                                    {customExercises.map((ex, i) => (
+                                        <div key={`${ex.name}-${i}`} className="flex items-center justify-between text-xs px-2 py-1.5 rounded"
+                                            style={{ background: 'var(--bg)', border: '1px solid var(--border)' }}>
+                                            <span>{ex.name} · {ex.sets}×{ex.reps}</span>
+                                            <button onClick={() => setCustomExercises((prev) => prev.filter((_, idx) => idx !== i))}
+                                                className="accent" style={{ fontWeight: 700 }}>×</button>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                            <button onClick={() => startSession('custom', customExercises)}
+                                className="btn-accent w-full py-3 text-sm font-bold rounded-lg"
+                                style={!customExercises.length ? { opacity: 0.4 } : {}}
+                                disabled={!customExercises.length}>
+                                START CUSTOM SESSION →
+                            </button>
+                        </div>
+                        {profile.disciplines.map(disc => {
+                            const d = DISCIPLINES[disc];
+                            const weekCount = getSessionCountByType(state.sessionLogs, profile.disciplines)[disc] || 0;
+                            const target = FREQ_TARGETS[disc] || 2;
+                            const pct = Math.min(100, (weekCount / target) * 100);
+                            return (
+                                <button key={disc} onClick={() => setSelectedType(disc === selectedType ? null : disc)}
+                                    className="w-full fade-in"
+                                    style={{ textAlign: 'left' }}>
+                                    <div className="card p-4 transition-all"
+                                        style={selectedType === disc ? { border: '1px solid var(--accent-border)', background: 'var(--accent-dim)' } : {}}>
+                                        <div className="flex items-center gap-3 mb-2">
+                                            <span className="text-2xl">{d.icon}</span>
+                                            <div className="flex-1">
+                                                <div className="font-semibold">{d.label}</div>
+                                                <div className="text-xs mt-0.5" style={{ color: 'var(--muted)' }}>{weekCount}/{target} this week</div>
+                                            </div>
+                                            <Icon.ChevronRight style={{ color: 'var(--muted)', transform: selectedType === disc ? 'rotate(90deg)' : 'none', transition: 'transform 0.2s' }} />
+                                        </div>
+                                        <div className="progress-bar"><div className="progress-fill" style={{ width: `${pct}%` }} /></div>
+                                        {selectedType === disc && (
+                                            <div className="mt-4 fade-in space-y-2">
+                                                {disc === 'martial_arts' && (
+                                                    <div className="mb-3">
+                                                        <div className="text-xs font-semibold tracking-widest mb-2" style={{ color: 'var(--muted)' }}>SUBTYPE</div>
+                                                        <div className="flex gap-2">
+                                                            {['striking', 'grappling', 'general'].map(s => (
+                                                                <button key={s} onClick={e => { e.stopPropagation(); setMaSubtype(s); }}
+                                                                    className="flex-1 py-2 text-xs font-semibold rounded capitalize transition-all"
+                                                                    style={maSubtype === s
+                                                                        ? { background: 'var(--accent)', color: '#fff' }
+                                                                        : { background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }}>
+                                                                    {s}
+                                                                </button>
+                                                            ))}
+                                                        </div>
+                                                    </div>
+                                                )}
+                                                <button onClick={e => { e.stopPropagation(); startSession(disc); }}
+                                                    className="btn-accent w-full py-3 text-sm font-bold rounded-lg">
+                                                    BEGIN SESSION →
+                                                </button>
+                                            </div>
+                                        )}
+                                    </div>
+                                </button>
+                            );
+                        })}
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    // ── Active session ──
+    const session = activeSession;
+    const disc = DISCIPLINES[session.type];
+    const block = BLOCK_CONFIG[state.programConfig.currentBlock];
+    const doneCount = session.exercises.filter(e => e.done).length;
+    const pre = aiMemory.preBrief;
+
+    return (
+        <div className="scrollable safe-bottom" style={{ minHeight: '100vh', background: 'var(--bg)' }}>
+            <div className="max-w-lg mx-auto px-4 pt-6 pb-4 space-y-4">
+
+                {/* session header */}
+                <div className="flex items-center justify-between">
+                    <div>
+                        <div className="flex items-center gap-2">
+                            <span className="text-xl">{disc?.icon}</span>
+                            <span className="text-lg font-bold">{disc?.label}</span>
+                        </div>
+                        <div className="text-xs mt-0.5" style={{ color: 'var(--muted)' }}>
+                            {doneCount}/{session.exercises.length} done · RPE target {block?.targetRPE}
+                        </div>
+                    </div>
+                    <button onClick={() => setShowComplete(true)}
+                        className="btn-accent px-4 py-2 text-xs font-bold rounded-lg">
+                        FINISH
+                    </button>
+                </div>
+
+                {/* progress bar */}
+                <div className="progress-bar">
+                    <div className="progress-fill" style={{ width: `${session.exercises.length ? (doneCount / session.exercises.length) * 100 : 0}%` }} />
+                </div>
+
+                {/* AI pre-session brief */}
+                {briefLoading && (
+                    <div className="card-sharp p-4 text-xs accent pulse">Coach is reviewing your readiness...</div>
+                )}
+                {pre && !briefLoading && (
+                    <div className="card-sharp p-4 fade-in" style={{ borderColor: 'var(--accent-border)', background: 'var(--accent-dim)' }}>
+                        <div className="flex items-center gap-2 mb-2">
+                            <Icon.Bot className="accent" style={{ width: 14, height: 14 }} />
+                            <div className="text-xs font-semibold tracking-widest accent">COACH BRIEF</div>
+                        </div>
+                        <div className="space-y-1.5 text-xs" style={{ color: 'var(--text)' }}>
+                            <div>🎯 <strong>Focus:</strong> {pre.focus}</div>
+                            <div>💡 <strong>Insight:</strong> {pre.insight}</div>
+                            <div>🧠 <strong>Mindset:</strong> {pre.mindset}</div>
+                        </div>
+                    </div>
+                )}
+
+                {/* Exercise list */}
+                {session.exercises.map((ex, idx) => (
+                    <ExerciseCard key={ex.id || idx} ex={ex} idx={idx} dispatch={dispatch}
+                        onSwap={() => openSwap(idx)} sessionType={session.type} />
+                ))}
+
+                {/* Complete button */}
+                <button onClick={() => setShowComplete(true)}
+                    className="btn-accent w-full py-4 text-sm font-bold rounded-lg mt-4">
+                    COMPLETE SESSION ({doneCount} exercises done)
+                </button>
+            </div>
+
+            {/* Swap modal */}
+            {swapIdx !== null && (
+                <div className="fixed inset-0 z-50 flex items-end" style={{ background: 'rgba(0,0,0,0.7)' }}
+                    onClick={() => setSwapIdx(null)}>
+                    <div className="w-full max-w-lg mx-auto p-4 rounded-t-2xl fade-in"
+                        style={{ background: 'var(--card)', border: '1px solid var(--border)' }}
+                        onClick={e => e.stopPropagation()}>
+                        <div className="text-xs font-semibold tracking-widest mb-4" style={{ color: 'var(--muted)' }}>SWAP EXERCISE</div>
+                        <div className="space-y-2">
+                            {swapOptions.map((opt, i) => (
+                                <button key={i} onClick={() => {
+                                    const fromName = activeSession.exercises[swapIdx]?.name;
+                                    dispatch({ type: 'SWAP_EXERCISE', idx: swapIdx, replacement: opt });
+                                    if (fromName) {
+                                        dispatch({ type: 'SET_CUSTOM_SUBSTITUTION', from: fromName, to: opt.name });
+                                    }
+                                    setSwapIdx(null);
+                                }}
+                                    className="w-full card p-3 flex items-center justify-between hover:border-accent text-sm font-medium text-left transition-all">
+                                    <span>{opt.name}</span>
+                                    <span className="text-xs" style={{ color: 'var(--muted)' }}>{opt.sets}×{opt.reps || opt.duration}</span>
+                                </button>
+                            ))}
+                        </div>
+                        <button onClick={() => setSwapIdx(null)} className="btn-ghost w-full py-3 text-sm font-semibold mt-3">Cancel</button>
+                    </div>
+                </div>
+            )}
+
+            {/* Complete modal */}
+            {showComplete && (
+                <SessionCompleteModal state={state} dispatch={dispatch} onClose={() => setShowComplete(false)} />
+            )}
+        </div>
+    );
+}
+
+function ExerciseCard({ ex, idx, dispatch, onSwap, sessionType }) {
+    const [expanded, setExpanded] = useState(false);
+
+    return (
+        <div className="card fade-in" style={ex.done ? { opacity: 0.6 } : {}}>
+            <div className="p-4 flex items-start gap-3" onClick={() => setExpanded(p => !p)} style={{ cursor: 'pointer' }}>
+                <button onClick={e => { e.stopPropagation(); dispatch({ type: 'TOGGLE_EXERCISE_DONE', idx }); }}
+                    className="w-6 h-6 rounded flex items-center justify-center flex-shrink-0 mt-0.5 transition-all"
+                    style={ex.done ? { background: 'var(--accent)' } : { border: '2px solid var(--border)' }}>
+                    {ex.done && <Icon.Check style={{ width: 12, height: 12, color: '#fff' }} />}
+                </button>
+                <div className="flex-1 min-w-0">
+                    <div className="font-semibold text-sm">{ex.name}</div>
+                    <div className="text-xs mt-0.5 mono" style={{ color: 'var(--muted)' }}>
+                        {ex.sets && ex.reps ? `${ex.sets} × ${ex.reps}` : ex.duration || ex.reps || ''}
+                        {ex.intensity ? ` · ${ex.intensity}` : ''}
+                    </div>
+                    {ex.cue && expanded && (
+                        <div className="text-xs mt-2 leading-relaxed px-3 py-2 rounded" style={{ color: 'var(--text)', background: 'var(--bg)', border: '1px solid var(--border)' }}>
+                            💡 {ex.cue}
+                        </div>
+                    )}
+                </div>
+                <button onClick={e => { e.stopPropagation(); onSwap(); }}
+                    className="text-xs px-2 py-1 rounded flex-shrink-0"
+                    style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--muted)' }}>
+                    swap
+                </button>
+            </div>
+            {ex.done && expanded && (
+                <div className="px-4 pb-4 grid grid-cols-2 gap-3 border-t pt-3" style={{ borderColor: 'var(--border)' }}>
+                    <div>
+                        <label className="block text-xs font-semibold tracking-wider mb-1" style={{ color: 'var(--muted)' }}>TOP SET</label>
+                        <input value={ex.topMetric || ''} placeholder="e.g. 80kg×5"
+                            onChange={e => dispatch({ type: 'SET_EXERCISE_LOG', idx, fields: { topMetric: e.target.value } })}
+                            className="w-full px-2 py-1.5 rounded text-xs"
+                            style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }} />
+                    </div>
+                    <div>
+                        <label className="block text-xs font-semibold tracking-wider mb-1" style={{ color: 'var(--muted)' }}>EFFORT RPE</label>
+                        <input type="number" min={1} max={10} value={ex.effortRPE || ''} placeholder="1-10"
+                            onChange={e => dispatch({ type: 'SET_EXERCISE_LOG', idx, fields: { effortRPE: +e.target.value } })}
+                            className="w-full px-2 py-1.5 rounded text-xs"
+                            style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }} />
+                    </div>
+                    <div className="col-span-2 flex items-center gap-2">
+                        <input type="checkbox" id={`pain-${idx}`} checked={!!ex.pain}
+                            onChange={e => dispatch({ type: 'SET_EXERCISE_LOG', idx, fields: { pain: e.target.checked } })}
+                            style={{ accentColor: '#ef4444' }} />
+                        <label htmlFor={`pain-${idx}`} className="text-xs" style={{ color: 'var(--muted)' }}>⚡ Pain / discomfort flagged</label>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+
+function SessionCompleteModal({ state, dispatch, onClose }) {
+    const [rpe, setRpe] = useState(7);
+    const [recovery, setRecovery] = useState(7);
+    const [energyLevel, setEnergyLevel] = useState(7);
+    const [notes, setNotes] = useState('');
+    const [saving, setSaving] = useState(false);
+    const [completed, setCompleted] = useState(false);
+    const [postSummary, setPostSummary] = useState(null);
+
+    const handleComplete = async () => {
+        setSaving(true);
+        dispatch({ type: 'COMPLETE_SESSION', rpe, recovery, energyLevel, notes });
+        const log = {
+            type: state.activeSession.type, timestamp: Date.now(),
+            duration: Math.round((Date.now() - state.activeSession.startedAt) / 60000),
+            overallRPE: rpe, recovery, energyRating: energyLevel, notes,
+            exerciseResults: state.activeSession.exercises,
+        };
+        const summary = await callPostSessionSummary(state, log, dispatch);
+        setPostSummary(summary);
+        setCompleted(true);
+        setSaving(false);
+    };
+
+    const sliders = [
+        { label: 'Overall RPE', key: 'rpe', val: rpe, set: setRpe, desc: 'How hard was this session?' },
+        { label: 'Recovery Quality', key: 'rec', val: recovery, set: setRecovery, desc: 'How well can you recover?' },
+        { label: 'Energy Level', key: 'en', val: energyLevel, set: setEnergyLevel, desc: 'How did energy hold up?' },
+    ];
+
+    return (
+        <div className="fixed inset-0 z-50 flex items-end" style={{ background: 'rgba(0,0,0,0.8)' }}>
+            <div className="w-full max-w-lg mx-auto rounded-t-2xl fade-in"
+                style={{ background: 'var(--card)', border: '1px solid var(--border)', maxHeight: '90vh', overflowY: 'auto' }}>
+                <div className="p-6">
+                    <div className="text-lg font-bold mb-1">Session Complete 💪</div>
+                    <div className="text-xs mb-6" style={{ color: 'var(--muted)' }}>Log how it felt so your coach can adapt your next session.</div>
+
+                    {!completed ? (
+                        <>
+                            <div className="space-y-5">
+                                {sliders.map(s => (
+                                    <div key={s.key}>
+                                        <div className="flex justify-between text-xs mb-1">
+                                            <span className="font-semibold">{s.label}</span>
+                                            <span className="font-bold accent">{s.val}/10</span>
+                                        </div>
+                                        <div className="text-xs mb-2" style={{ color: 'var(--muted)' }}>{s.desc}</div>
+                                        <input type="range" min={1} max={10} value={s.val}
+                                            onChange={e => s.set(+e.target.value)}
+                                            className="w-full" style={{ accentColor: 'var(--accent)' }} />
+                                    </div>
+                                ))}
+                                <div>
+                                    <label className="block text-xs font-semibold mb-2" style={{ color: 'var(--muted)' }}>NOTES (optional)</label>
+                                    <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={3}
+                                        placeholder="How did it feel? Any PRs, pains, or observations..."
+                                        className="w-full px-3 py-2 rounded-lg text-xs leading-relaxed resize-none"
+                                        style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }} />
+                                </div>
+                            </div>
+
+                            <div className="flex gap-3 mt-6">
+                                <button onClick={onClose} className="btn-ghost flex-1 py-3 text-sm font-semibold">Cancel</button>
+                                <button onClick={handleComplete} disabled={saving}
+                                    className="btn-accent flex-1 py-3 text-sm font-bold"
+                                    style={saving ? { opacity: 0.6 } : {}}>
+                                    {saving ? 'Saving...' : 'LOG SESSION'}
+                                </button>
+                            </div>
+                        </>
+                    ) : (
+                        <>
+                            <div className="card-sharp p-4 fade-in" style={{ borderColor: 'var(--accent-border)', background: 'var(--accent-dim)' }}>
+                                <div className="text-xs font-semibold tracking-widest mb-2 accent">POST-SESSION SUMMARY</div>
+                                {postSummary ? (
+                                    <div className="space-y-1.5 text-xs">
+                                        <div><strong>Verdict:</strong> {postSummary.verdict}</div>
+                                        <div><strong>Insight:</strong> {postSummary.insight}</div>
+                                        <div><strong>Next Focus:</strong> {postSummary.nextFocus}</div>
+                                    </div>
+                                ) : (
+                                    <div className="text-xs" style={{ color: 'var(--muted)' }}>Session logged. Enable AI Coach in Settings for post-session analysis.</div>
+                                )}
+                            </div>
+                            <div className="flex gap-3 mt-6">
+                                <button onClick={() => { dispatch({ type: 'SET_VIEW', view: 'home' }); onClose(); }}
+                                    className="btn-accent flex-1 py-3 text-sm font-bold">
+                                    Back To Home
+                                </button>
+                            </div>
+                        </>
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+}
+
+function buildBodyweightTrend(sessionLogs, currentBodyweight) {
+    const points = (sessionLogs || [])
+        .filter((s) => Number.isFinite(s.bodyweight))
+        .slice()
+        .reverse()
+        .slice(-12)
+        .map((s, i) => ({ i: i + 1, bw: s.bodyweight }));
+    if (!points.length && Number.isFinite(currentBodyweight)) {
+        return [{ i: 1, bw: currentBodyweight }];
+    }
+    return points;
+}
+
+function getWeekKey(ts) {
+    const d = new Date(ts);
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() - d.getDay());
+    return d.toISOString().slice(0, 10);
+}
+
+function buildWeeklyVolume(sessionLogs) {
+    const buckets = {};
+    (sessionLogs || []).forEach((log) => {
+        const key = getWeekKey(log.timestamp);
+        const volume = (log.exerciseResults || []).reduce((acc, ex) => acc + (Number.isFinite(ex.setsCompleted) ? ex.setsCompleted : 0), 0);
+        buckets[key] = (buckets[key] || 0) + volume;
+    });
+    return Object.entries(buckets)
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .slice(-8)
+        .map(([week, volume], i) => ({ i: i + 1, week, volume }));
+}
+
+function withProjection(series) {
+    if (!Array.isArray(series) || series.length < 2) return series || [];
+    const n = series.length;
+    const first = series[0].rpe;
+    const last = series[n - 1].rpe;
+    const slope = (last - first) / Math.max(1, n - 1);
+    return series.map((p, idx) => ({ ...p, proj: +(first + slope * idx).toFixed(2) }));
+}
+
+function buildSkillCatalog(disciplines) {
+    const catalog = {};
+    if (disciplines.includes('calisthenics')) {
+        Object.entries(EXERCISE_DB.calisthenics).forEach(([key, data]) => {
+            catalog[key] = { label: data.label, levels: data.levels };
+        });
+    }
+    if (disciplines.includes('running')) {
+        catalog.runningPace = {
+            label: 'Running Pace Progression',
+            levels: [
+                { name: 'Run-Walk Base', cue: 'Build consistency at easy pace' },
+                { name: 'Steady Zone 2', cue: 'Extend easy run duration weekly' },
+                { name: 'Tempo Comfort', cue: 'Hold tempo effort with stable form' },
+                { name: 'Race-Pace Intervals', cue: 'Sustain higher-intensity repeats' },
+            ],
+        };
+    }
+    if (disciplines.includes('martial_arts')) {
+        catalog.martialTiming = {
+            label: 'Martial Timing & Reactions',
+            levels: [
+                { name: 'Fundamentals', cue: 'Footwork and guard discipline first' },
+                { name: 'Flow Drills', cue: 'Add combinations and transitions' },
+                { name: 'Pressure Reps', cue: 'Maintain composure under pace' },
+                { name: 'Live Decision Speed', cue: 'React fast, recover shape instantly' },
+            ],
+        };
+    }
+    return catalog;
+}
+// ─── PROGRESS VIEW ────────────────────────────────────────────────────────────
+function ProgressView({ state, dispatch }) {
+    const [tab, setTab] = useState('overview');
+    const { profile, athleteModel, progression, muscleRecovery, sessionLogs } = state;
+    const updatedMuscles = useMemo(() => updateMuscleStatuses(muscleRecovery), [muscleRecovery]);
+    const tabs = ['overview', 'domains', 'skills', 'muscles'];
+    const bodyweightTrend = useMemo(() => buildBodyweightTrend(sessionLogs, profile.bodyweight), [sessionLogs, profile.bodyweight]);
+    const weeklyVolume = useMemo(() => buildWeeklyVolume(sessionLogs), [sessionLogs]);
+    const skillCatalog = useMemo(() => buildSkillCatalog(profile.disciplines), [profile.disciplines]);
+
+    return (
+        <div className="scrollable safe-bottom" style={{ minHeight: '100vh', background: 'var(--bg)' }}>
+            <div className="max-w-lg mx-auto">
+                {/* Tab bar */}
+                <div className="flex border-b sticky top-0 z-10" style={{ borderColor: 'var(--border)', background: 'var(--bg)' }}>
+                    {tabs.map(t => (
+                        <button key={t} onClick={() => setTab(t)}
+                            className="flex-1 py-3 text-xs font-semibold capitalize transition-all"
+                            style={tab === t ? { color: 'var(--accent)', borderBottom: '2px solid var(--accent)' } : { color: 'var(--muted)' }}>
+                            {t}
+                        </button>
+                    ))}
+                </div>
+
+                <div className="px-4 py-4 space-y-4">
+                    {/* OVERVIEW TAB */}
+                    {tab === 'overview' && (
+                        <div className="fade-in space-y-4">
+                            {/* Stats row */}
+                            <div className="grid grid-cols-3 gap-3">
+                                {[
+                                    { label: 'Total Sessions', val: sessionLogs.length, icon: '🏋️' },
+                                    { label: 'Day Streak', val: `${athleteModel.streakDays || 0}🔥`, icon: '' },
+                                    { label: 'This Week', val: getSessionsThisWeek(sessionLogs).length, icon: '📅' },
+                                ].map(s => (
+                                    <div key={s.label} className="card p-3 text-center">
+                                        <div className="text-xl font-bold accent">{s.val}</div>
+                                        <div className="text-xs mt-1" style={{ color: 'var(--muted)' }}>{s.label}</div>
+                                    </div>
+                                ))}
+                            </div>
+
+                            {/* Session frequency heatmap (last 4 weeks) */}
+                            <div className="card p-4">
+                                <div className="text-xs font-semibold tracking-widest mb-3" style={{ color: 'var(--muted)' }}>LAST 28 DAYS</div>
+                                <div className="grid gap-1" style={{ gridTemplateColumns: 'repeat(28, 1fr)' }}>
+                                    {Array.from({ length: 28 }).map((_, i) => {
+                                        const dayTs = Date.now() - (27 - i) * 86400000;
+                                        const dayStr = new Date(dayTs).toDateString();
+                                        const hasSession = sessionLogs.some(l => new Date(l.timestamp).toDateString() === dayStr);
+                                        return (
+                                            <div key={i} className="rounded-sm" title={new Date(dayTs).toLocaleDateString()}
+                                                style={{ height: 12, background: hasSession ? 'var(--accent)' : 'var(--border)', opacity: hasSession ? 1 : 0.5 }} />
+                                        );
+                                    })}
+                                </div>
+                                <div className="flex justify-between text-xs mt-2" style={{ color: 'var(--muted)' }}>
+                                    <span>28 days ago</span><span>Today</span>
+                                </div>
+                            </div>
+
+                            {/* RPE trend across all sessions */}
+                            {sessionLogs.length >= 3 && (
+                                <div className="card p-4">
+                                    <div className="text-xs font-semibold tracking-widest mb-3" style={{ color: 'var(--muted)' }}>OVERALL RPE TREND</div>
+                                    <ResponsiveContainer width="100%" height={100}>
+                                        <AreaChart data={sessionLogs.slice().reverse().slice(-15).map((l, i) => ({ i: i + 1, rpe: l.overallRPE }))}>
+                                            <defs>
+                                                <linearGradient id="rpeGrad" x1="0" y1="0" x2="0" y2="1">
+                                                    <stop offset="5%" stopColor="var(--accent)" stopOpacity={0.3} />
+                                                    <stop offset="95%" stopColor="var(--accent)" stopOpacity={0} />
+                                                </linearGradient>
+                                            </defs>
+                                            <Area type="monotone" dataKey="rpe" stroke="var(--accent)" strokeWidth={2}
+                                                fill="url(#rpeGrad)" dot={false} />
+                                            <Tooltip contentStyle={{ background: 'var(--card)', border: '1px solid var(--border)', fontSize: 11 }}
+                                                formatter={v => [`RPE ${v}`, '']} labelFormatter={() => ''} />
+                                        </AreaChart>
+                                    </ResponsiveContainer>
+                                </div>
+                            )}
+
+                            {/* Bodyweight trend */}
+                            <div className="card p-4">
+                                <div className="text-xs font-semibold tracking-widest mb-3" style={{ color: 'var(--muted)' }}>BODYWEIGHT TREND</div>
+                                {bodyweightTrend.length >= 2 ? (
+                                    <ResponsiveContainer width="100%" height={90}>
+                                        <LineChart data={bodyweightTrend}>
+                                            <Line type="monotone" dataKey="bw" stroke="var(--accent)" strokeWidth={2} dot={false} />
+                                            <Tooltip contentStyle={{ background: 'var(--card)', border: '1px solid var(--border)', fontSize: 10 }}
+                                                formatter={v => [`${v} kg`, '']} labelFormatter={() => ''} />
+                                        </LineChart>
+                                    </ResponsiveContainer>
+                                ) : (
+                                    <div className="text-xs" style={{ color: 'var(--muted)' }}>Log sessions to build bodyweight trend.</div>
+                                )}
+                            </div>
+
+                            {/* Weekly volume */}
+                            <div className="card p-4">
+                                <div className="text-xs font-semibold tracking-widest mb-3" style={{ color: 'var(--muted)' }}>WEEKLY VOLUME (SETS COMPLETED)</div>
+                                {weeklyVolume.length >= 2 ? (
+                                    <ResponsiveContainer width="100%" height={100}>
+                                        <AreaChart data={weeklyVolume}>
+                                            <Area type="monotone" dataKey="volume" stroke="var(--accent)" fill="var(--accent-dim)" strokeWidth={2} />
+                                            <Tooltip contentStyle={{ background: 'var(--card)', border: '1px solid var(--border)', fontSize: 10 }}
+                                                formatter={v => [`${v} sets`, '']} labelFormatter={label => weeklyVolume[label - 1]?.week || ''} />
+                                        </AreaChart>
+                                    </ResponsiveContainer>
+                                ) : (
+                                    <div className="text-xs" style={{ color: 'var(--muted)' }}>Need at least 2 logged weeks for volume trend.</div>
+                                )}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* DOMAINS TAB */}
+                    {tab === 'domains' && (
+                        <div className="fade-in space-y-4">
+                            {profile.disciplines.map(disc => {
+                                const d = DISCIPLINES[disc];
+                                const domainData = athleteModel.domainScores?.[disc] || { sessions: 0, trend: [] };
+                                const chartData = withProjection((domainData.trend || []).map((rpe, i) => ({ i: i + 1, rpe })));
+                                return (
+                                    <div key={disc} className="card p-4">
+                                        <div className="flex items-center justify-between mb-3">
+                                            <div className="flex items-center gap-2">
+                                                <span className="text-lg">{d.icon}</span>
+                                                <div>
+                                                    <div className="font-semibold text-sm">{d.label}</div>
+                                                    <div className="text-xs" style={{ color: 'var(--muted)' }}>{domainData.sessions || 0} sessions logged</div>
+                                                </div>
+                                            </div>
+                                            {domainData.trend?.length > 0 && (
+                                                <div className="text-xs mono accent font-bold">RPE {domainData.trend.slice(-1)[0]}</div>
+                                            )}
+                                        </div>
+                                        {chartData.length >= 2 ? (
+                                            <ResponsiveContainer width="100%" height={60}>
+                                                <LineChart data={chartData}>
+                                                    <Line type="monotone" dataKey="rpe" stroke="var(--accent)" strokeWidth={2} dot={false} />
+                                                    <Line type="monotone" dataKey="proj" stroke="#94a3b8" strokeWidth={1.5} strokeDasharray="4 4" dot={false} />
+                                                    <Tooltip contentStyle={{ background: 'var(--card)', border: '1px solid var(--border)', fontSize: 10 }}
+                                                        formatter={(v, key) => [key === 'proj' ? `Projected ${v}` : `RPE ${v}`, '']} labelFormatter={() => ''} />
+                                                </LineChart>
+                                            </ResponsiveContainer>
+                                        ) : (
+                                            <div className="text-xs text-center py-2" style={{ color: 'var(--muted)' }}>Log 2+ sessions to see trend</div>
+                                        )}
+                                        {/* Per-exercise history */}
+                                        {Object.entries(progression.exercises || {})
+                                            .filter(([, v]) => v.history?.length >= 2)
+                                            .slice(0, 3)
+                                            .map(([name, ex]) => (
+                                                <div key={name} className="mt-3 pt-3 border-t" style={{ borderColor: 'var(--border)' }}>
+                                                    <div className="flex justify-between items-center mb-1">
+                                                        <div className="text-xs font-medium">{name}</div>
+                                                        <span className="chip text-xs" style={{
+                                                            fontSize: 10, padding: '2px 6px',
+                                                            color: ex.outcome === 'advance' ? '#22c55e' : ex.outcome === 'regress' ? '#ef4444' : 'var(--muted)',
+                                                            background: ex.outcome === 'advance' ? 'rgba(34,197,94,0.1)' : ex.outcome === 'regress' ? 'rgba(239,68,68,0.1)' : 'transparent',
+                                                            border: '1px solid currentColor',
+                                                        }}>{ex.outcome}</span>
+                                                    </div>
+                                                    <ResponsiveContainer width="100%" height={40}>
+                                                        <LineChart data={ex.history.slice(-10).map((h, i) => ({ i, rpe: h.effortRPE }))}>
+                                                            <Line type="monotone" dataKey="rpe" stroke="var(--accent)" strokeWidth={1.5} dot={false} />
+                                                        </LineChart>
+                                                    </ResponsiveContainer>
+                                                </div>
+                                            ))}
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+
+                    {/* SKILLS TAB */}
+                    {tab === 'skills' && (
+                        <div className="fade-in space-y-4">
+                            {Object.keys(skillCatalog).length === 0 ? (
+                                <div className="text-center py-12 text-sm" style={{ color: 'var(--muted)' }}>
+                                    Add a skill-oriented discipline (Calisthenics, Running, Martial Arts) to track skills.
+                                </div>
+                            ) : (
+                                Object.entries(skillCatalog).map(([skillKey, skillData]) => {
+                                    const level = progression.skills?.[skillKey]?.level || 0;
+                                    const max = skillData.levels.length - 1;
+                                    const current = skillData.levels[level];
+                                    return (
+                                        <div key={skillKey} className="card p-4">
+                                            <div className="flex items-center justify-between mb-2">
+                                                <div>
+                                                    <div className="font-semibold text-sm">{skillData.label}</div>
+                                                    <div className="text-xs mt-0.5 accent font-medium">{current?.name}</div>
+                                                </div>
+                                                <div className="text-xs mono" style={{ color: 'var(--muted)' }}>Lv {level + 1}/{max + 1}</div>
+                                            </div>
+                                            <div className="progress-bar mb-3">
+                                                <div className="progress-fill" style={{ width: `${((level) / max) * 100}%` }} />
+                                            </div>
+                                            {current?.cue && (
+                                                <div className="text-xs mb-3 px-3 py-2 rounded" style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--muted)' }}>
+                                                    💡 {current.cue}
+                                                </div>
+                                            )}
+                                            <div className="flex gap-2">
+                                                <button onClick={() => dispatch({ type: 'SET_SKILL_LEVEL', discipline: 'skills', skill: skillKey, level: Math.max(0, level - 1) })}
+                                                    className="btn-ghost flex-1 py-2 text-xs font-semibold" disabled={level <= 0}>↓ Regress</button>
+                                                <button onClick={() => dispatch({ type: 'SET_SKILL_LEVEL', discipline: 'skills', skill: skillKey, level: Math.min(max, level + 1) })}
+                                                    className="btn-accent flex-1 py-2 text-xs font-semibold" disabled={level >= max}>↑ Level Up</button>
+                                            </div>
+                                        </div>
+                                    );
+                                })
+                            )}
+                        </div>
+                    )}
+
+                    {/* MUSCLE MAP TAB */}
+                    {tab === 'muscles' && (
+                        <div className="fade-in">
+                            <MuscleMap muscles={updatedMuscles} />
+                            <div className="grid grid-cols-1 gap-2 mt-4">
+                                {Object.entries(updatedMuscles).map(([k, v]) => (
+                                    <div key={k} className="flex items-center justify-between py-2 px-3 rounded-lg" style={{ background: 'var(--card)', border: '1px solid var(--border)' }}>
+                                        <span className="text-xs font-medium capitalize">{k.replace(/([A-Z])/g, ' $1').toLowerCase()}</span>
+                                        <div className="flex items-center gap-2">
+                                            {v.lastTrained && <span className="text-xs" style={{ color: 'var(--muted)' }}>{Math.round((Date.now() - v.lastTrained) / 3600000)}h ago</span>}
+                                            <span className={`chip`} style={{
+                                                fontSize: 10, padding: '2px 8px',
+                                                color: v.status === 'fresh' ? '#22c55e' : v.status === 'recovering' ? '#fbbf24' : '#ef4444',
+                                                background: v.status === 'fresh' ? 'rgba(34,197,94,0.1)' : v.status === 'recovering' ? 'rgba(251,191,36,0.1)' : 'rgba(239,68,68,0.1)',
+                                                border: '1px solid currentColor',
+                                            }}>{v.status}</span>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                            <div className="flex gap-4 justify-center mt-4 text-xs" style={{ color: 'var(--muted)' }}>
+                                <span style={{ color: '#22c55e' }}>● Fresh</span>
+                                <span style={{ color: '#fbbf24' }}>● Recovering</span>
+                                <span style={{ color: '#ef4444' }}>● Fatigued</span>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+}
+
+function MuscleMap({ muscles }) {
+    const c = k => {
+        const s = muscles[k]?.status;
+        return s === 'fresh' ? '#22c55e' : s === 'recovering' ? '#fbbf24' : s === 'fatigued' ? '#ef4444' : '#3f3f46';
+    };
+    const o = k => muscles[k]?.status === 'fresh' || muscles[k]?.status === 'recovering' || muscles[k]?.status === 'fatigued' ? 0.75 : 0.35;
+    return (
+        <div className="flex justify-center">
+            <svg viewBox="0 0 200 380" width="180" height="342" style={{ display: 'block' }}>
+                {/* Head */}
+                <ellipse cx="100" cy="28" rx="22" ry="26" fill="#27272a" />
+                {/* Neck */}
+                <rect x="90" y="50" width="20" height="18" rx="4" fill="#27272a" />
+                {/* Torso */}
+                <rect x="64" y="66" width="72" height="90" rx="8" fill="#27272a" />
+                {/* Chest */}
+                <ellipse cx="84" cy="85" rx="16" ry="12" fill={c('chest')} opacity={o('chest')} />
+                <ellipse cx="116" cy="85" rx="16" ry="12" fill={c('chest')} opacity={o('chest')} />
+                {/* Shoulders */}
+                <ellipse cx="54" cy="74" rx="14" ry="12" fill={c('shoulders')} opacity={o('shoulders')} />
+                <ellipse cx="146" cy="74" rx="14" ry="12" fill={c('shoulders')} opacity={o('shoulders')} />
+                {/* Back (shown as inner torso overlay) */}
+                <rect x="72" y="98" width="56" height="50" rx="4" fill={c('back')} opacity={o('back') * 0.7} />
+                {/* Core */}
+                <rect x="76" y="108" width="48" height="42" rx="4" fill={c('core')} opacity={o('core')} />
+                {/* Lower Back */}
+                <rect x="76" y="140" width="48" height="16" rx="4" fill={c('lowerBack')} opacity={o('lowerBack')} />
+                {/* Arms */}
+                <rect x="38" y="82" width="18" height="60" rx="8" fill={c('arms')} opacity={o('arms')} />
+                <rect x="144" y="82" width="18" height="60" rx="8" fill={c('arms')} opacity={o('arms')} />
+                {/* Forearms */}
+                <rect x="36" y="144" width="16" height="48" rx="7" fill="#27272a" />
+                <rect x="148" y="144" width="16" height="48" rx="7" fill="#27272a" />
+                {/* Pelvis */}
+                <ellipse cx="100" cy="165" rx="34" ry="14" fill="#27272a" />
+                {/* Hip flexors */}
+                <ellipse cx="83" cy="170" rx="14" ry="10" fill={c('hipFlexors')} opacity={o('hipFlexors')} />
+                <ellipse cx="117" cy="170" rx="14" ry="10" fill={c('hipFlexors')} opacity={o('hipFlexors')} />
+                {/* Glutes */}
+                <ellipse cx="83" cy="182" rx="18" ry="14" fill={c('glutes')} opacity={o('glutes')} />
+                <ellipse cx="117" cy="182" rx="18" ry="14" fill={c('glutes')} opacity={o('glutes')} />
+                {/* Quads */}
+                <rect x="68" y="192" width="28" height="72" rx="12" fill={c('quads')} opacity={o('quads')} />
+                <rect x="104" y="192" width="28" height="72" rx="12" fill={c('quads')} opacity={o('quads')} />
+                {/* Hamstrings (behind) */}
+                <rect x="70" y="208" width="24" height="52" rx="10" fill={c('hamstrings')} opacity={o('hamstrings') * 0.6} />
+                <rect x="106" y="208" width="24" height="52" rx="10" fill={c('hamstrings')} opacity={o('hamstrings') * 0.6} />
+                {/* Knees */}
+                <ellipse cx="82" cy="268" rx="14" ry="9" fill="#27272a" />
+                <ellipse cx="118" cy="268" rx="14" ry="9" fill="#27272a" />
+                {/* Calves */}
+                <rect x="70" y="276" width="24" height="60" rx="10" fill={c('calves')} opacity={o('calves')} />
+                <rect x="106" y="276" width="24" height="60" rx="10" fill={c('calves')} opacity={o('calves')} />
+                {/* Feet */}
+                <ellipse cx="82" cy="340" rx="16" ry="8" fill="#27272a" />
+                <ellipse cx="118" cy="340" rx="16" ry="8" fill="#27272a" />
+            </svg>
+        </div>
+    );
+}
+
+// ─── HISTORY VIEW ─────────────────────────────────────────────────────────────
+function HistoryView({ state }) {
+    const { sessionLogs, profile } = state;
+    const [filter, setFilter] = useState('all');
+    const filterTypes = useMemo(() => {
+        const types = new Set([...(profile.disciplines || []), ...sessionLogs.map((l) => l.type)]);
+        return Array.from(types).filter(Boolean);
+    }, [profile.disciplines, sessionLogs]);
+
+    const filtered = filter === 'all' ? sessionLogs : sessionLogs.filter(l => l.type === filter);
+
+    return (
+        <div className="scrollable safe-bottom" style={{ minHeight: '100vh', background: 'var(--bg)' }}>
+            <div className="max-w-lg mx-auto px-4 pt-6 pb-4">
+                {/* Filter chips */}
+                <div className="flex gap-2 flex-wrap mb-5">
+                    <button onClick={() => setFilter('all')}
+                        className={`chip ${filter === 'all' ? 'chip-active' : ''}`}>All</button>
+                    {filterTypes.map(d => (
+                        <button key={d} onClick={() => setFilter(d)}
+                            className={`chip ${filter === d ? 'chip-active' : ''}`}>
+                            {DISCIPLINES[d]?.icon} {DISCIPLINES[d]?.label}
+                        </button>
+                    ))}
+                </div>
+
+                {filtered.length === 0 ? (
+                    <div className="text-center py-20 text-sm" style={{ color: 'var(--muted)' }}>
+                        No sessions logged yet. Start training!
+                    </div>
+                ) : (
+                    <div className="space-y-3">
+                        {filtered.map((log, i) => (
+                            <HistoryCard key={log.id || i} log={log} />
+                        ))}
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+}
+
+function HistoryCard({ log }) {
+    const [open, setOpen] = useState(false);
+    const disc = DISCIPLINES[log.type];
+    const done = (log.exerciseResults || []).filter(e => e.done).length;
+    const total = (log.exerciseResults || []).length;
+
+    return (
+        <div className="card fade-in">
+            <div className="p-4 flex items-start gap-3 cursor-pointer" onClick={() => setOpen(p => !p)}>
+                <span className="text-xl">{disc?.icon || '🏋️'}</span>
+                <div className="flex-1">
+                    <div className="font-semibold text-sm">{disc?.label || log.type}
+                        {log.maSubtype && <span className="ml-2 text-xs px-2 py-0.5 rounded" style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--muted)' }}>{log.maSubtype}</span>}
+                    </div>
+                    <div className="text-xs mt-0.5" style={{ color: 'var(--muted)' }}>{formatDate(log.timestamp)} · {log.duration}min · {done}/{total} exercises</div>
+                </div>
+                <div className="text-right">
+                    <div className="text-sm font-bold accent">RPE {log.overallRPE}</div>
+                    <div className="text-xs" style={{ color: 'var(--muted)' }}>😴 {log.recovery}</div>
+                </div>
+            </div>
+            {open && (
+                <div className="px-4 pb-4 border-t pt-3 fade-in" style={{ borderColor: 'var(--border)' }}>
+                    {log.notes && <p className="text-xs mb-3 italic" style={{ color: 'var(--muted)' }}>"{log.notes}"</p>}
+                    {(log.exerciseResults || []).map((ex, i) => (
+                        <div key={i} className="flex items-center gap-2 py-1">
+                            <div className={`w-2 h-2 rounded-full flex-shrink-0`} style={{ background: ex.done ? '#22c55e' : '#3f3f46' }} />
+                            <span className="text-xs flex-1">{ex.name}</span>
+                            {ex.topMetric && <span className="text-xs mono accent">{ex.topMetric}</span>}
+                            {ex.effortRPE && <span className="text-xs" style={{ color: 'var(--muted)' }}>RPE {ex.effortRPE}</span>}
+                            {ex.pain && <span className="text-xs" style={{ color: '#ef4444' }}>⚡</span>}
+                        </div>
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+}
+// ─── SETTINGS VIEW ────────────────────────────────────────────────────────────
+function SettingsView({ state, dispatch }) {
+    const { profile, programConfig, aiConfig, constraints } = state;
+    const fileRef = useRef(null);
+    const [section, setSection] = useState('goal');
+    const [resetConfirm, setResetConfirm] = useState(false);
+    const [exportDone, setExportDone] = useState(false);
+    const [blockedPatternsInput, setBlockedPatternsInput] = useState((constraints.blockedPatterns || []).join(', '));
+    const [v5Preview, setV5Preview] = useState(null);
+    const [v5Error, setV5Error] = useState('');
+
+    const exportData = () => {
+        const json = JSON.stringify(state, null, 2);
+        const blob = new Blob([json], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `miyamoto-backup-${new Date().toISOString().slice(0, 10)}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+        setExportDone(true);
+        setTimeout(() => setExportDone(false), 2000);
+    };
+
+    const importData = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+            try {
+                dispatch({ type: 'IMPORT_STATE', data: JSON.parse(ev.target.result) });
+            } catch {
+                alert('Invalid backup file.');
+            }
+        };
+        reader.readAsText(file);
+    };
+
+    const previewV5Import = () => {
+        try {
+            const raw = localStorage.getItem('miyamoto_v5');
+            if (!raw) {
+                setV5Error('No miyamoto_v5 data found in this browser.');
+                setV5Preview(null);
+                return;
+            }
+            const parsed = JSON.parse(raw);
+            const migrated = migrateState(parsed);
+            setV5Preview({
+                name: migrated.profile.name || 'Unknown',
+                sessions: migrated.sessionLogs.length,
+                disciplines: migrated.profile.disciplines.join(', '),
+            });
+            setV5Error('');
+        } catch {
+            setV5Error('Could not parse miyamoto_v5 data.');
+            setV5Preview(null);
+        }
+    };
+
+    const importV5Now = () => {
+        try {
+            const raw = localStorage.getItem('miyamoto_v5');
+            if (!raw) {
+                setV5Error('No miyamoto_v5 data found in this browser.');
+                return;
+            }
+            const confirmed = window.confirm('Import migrated `miyamoto_v5` data and replace current V7 state? A rollback backup will be created first.');
+            if (!confirmed) return;
+            localStorage.setItem('miyamoto_v7_backup_before_v5_import', JSON.stringify(state));
+            dispatch({ type: 'IMPORT_V5_LOCAL_STATE', data: JSON.parse(raw) });
+            setV5Error('');
+        } catch {
+            setV5Error('Failed to import V5 data.');
+        }
+    };
+
+    const restorePreImportBackup = () => {
+        try {
+            const raw = localStorage.getItem('miyamoto_v7_backup_before_v5_import');
+            if (!raw) return;
+            dispatch({ type: 'IMPORT_STATE', data: JSON.parse(raw) });
+        } catch { }
+    };
+
+    const saveBlockedPatterns = () => {
+        const patterns = blockedPatternsInput
+            .split(',')
+            .map((p) => p.trim())
+            .filter(Boolean);
+        dispatch({ type: 'SET_BLOCKED_PATTERNS', patterns });
+    };
+
+    const sections = [
+        { id: 'goal', label: 'Goal Recalibration' },
+        { id: 'disciplines', label: 'Discipline Manager' },
+        { id: 'persona', label: 'AI Persona' },
+        { id: 'accent', label: 'Accent Color' },
+        { id: 'ai', label: 'AI Coach' },
+        { id: 'constraints', label: 'Constraints' },
+        { id: 'v5import', label: 'V5 Import' },
+        { id: 'data', label: 'Data' },
+    ];
+
+    return (
+        <div className="scrollable safe-bottom" style={{ minHeight: '100vh', background: 'var(--bg)' }}>
+            <div className="max-w-lg mx-auto">
+                <div className="flex border-b overflow-x-auto" style={{ borderColor: 'var(--border)' }}>
+                    {sections.map((s) => (
+                        <button key={s.id} onClick={() => setSection(s.id)}
+                            className="flex-shrink-0 px-4 py-3 text-xs font-semibold transition-all"
+                            style={section === s.id ? { color: 'var(--accent)', borderBottom: '2px solid var(--accent)' } : { color: 'var(--muted)' }}>
+                            {s.label}
+                        </button>
+                    ))}
+                </div>
+
+                <div className="px-4 py-5 space-y-4">
+                    {section === 'goal' && (
+                        <div className="fade-in space-y-3">
+                            <div className="text-xs font-semibold tracking-widest" style={{ color: 'var(--muted)' }}>GOAL RECALIBRATION</div>
+                            {Object.entries(GOALS).map(([k, g]) => (
+                                <button key={k} onClick={() => dispatch({ type: 'SET_PROFILE_FIELD', key: 'goal', value: k })}
+                                    className="w-full flex items-center gap-3 p-3 rounded-lg text-sm text-left transition-all"
+                                    style={profile.goal === k ? { background: 'var(--accent-dim)', border: '1px solid var(--accent-border)' } : { background: 'var(--card)', border: '1px solid var(--border)' }}>
+                                    <span>{g.icon}</span>
+                                    <span className="font-medium">{g.label}</span>
+                                    {profile.goal === k && <Icon.Check className="ml-auto accent" style={{ width: 14, height: 14 }} />}
+                                </button>
+                            ))}
+                        </div>
+                    )}
+
+                    {section === 'disciplines' && (
+                        <div className="fade-in space-y-3">
+                            <div className="text-xs font-semibold tracking-widest" style={{ color: 'var(--muted)' }}>DISCIPLINE MANAGER</div>
+                            {Object.entries(DISCIPLINES).filter(([k]) => k !== 'custom').map(([k, d]) => {
+                                const active = profile.disciplines.includes(k);
+                                return (
+                                    <button key={k} onClick={() => {
+                                        const next = active ? profile.disciplines.filter((x) => x !== k) : [...profile.disciplines, k];
+                                        dispatch({ type: 'SET_PROFILE_FIELD', key: 'disciplines', value: next });
+                                    }}
+                                        className="w-full flex items-center gap-3 p-4 rounded-xl text-left transition-all"
+                                        style={active ? { background: 'var(--accent-dim)', border: '1px solid var(--accent-border)' } : { background: 'var(--card)', border: '1px solid var(--border)' }}>
+                                        <span className="text-xl">{d.icon}</span>
+                                        <div className="flex-1">
+                                            <div className="font-semibold text-sm">{d.label}</div>
+                                            <div className="text-xs mt-0.5" style={{ color: 'var(--muted)' }}>{d.desc}</div>
+                                        </div>
+                                        <div className="w-5 h-5 rounded flex items-center justify-center flex-shrink-0" style={active ? { background: 'var(--accent)' } : { border: '1px solid var(--border)' }}>
+                                            {active && <Icon.Check style={{ color: '#fff', width: 12, height: 12 }} />}
+                                        </div>
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    )}
+
+                    {section === 'persona' && (
+                        <div className="fade-in space-y-3">
+                            <div className="text-xs font-semibold tracking-widest" style={{ color: 'var(--muted)' }}>AI PERSONA</div>
+                            {Object.entries(COACH_PERSONAS).map(([k, p]) => (
+                                <button key={k} onClick={() => dispatch({ type: 'SET_PROGRAM_CONFIG', fields: { coachPersona: k } })}
+                                    className="w-full flex items-center justify-between p-3 rounded-lg text-sm transition-all"
+                                    style={programConfig.coachPersona === k ? { background: 'var(--accent-dim)', border: '1px solid var(--accent-border)' } : { background: 'var(--card)', border: '1px solid var(--border)' }}>
+                                    <div>
+                                        <div className="font-semibold text-sm">{p.label}</div>
+                                        <div className="text-xs mt-0.5" style={{ color: 'var(--muted)' }}>{p.desc}</div>
+                                    </div>
+                                    {programConfig.coachPersona === k && <Icon.Check className="accent" style={{ width: 14, height: 14 }} />}
+                                </button>
+                            ))}
+                        </div>
+                    )}
+
+                    {section === 'accent' && (
+                        <div className="fade-in space-y-3">
+                            <div className="text-xs font-semibold tracking-widest" style={{ color: 'var(--muted)' }}>ACCENT COLOR</div>
+                            <div className="flex gap-3 flex-wrap">
+                                {Object.entries(ACCENT_COLORS).map(([k, v]) => (
+                                    <button key={k} onClick={() => dispatch({ type: 'APPLY_ACCENT', color: k })}
+                                        className="w-9 h-9 rounded-full border-2 transition-all"
+                                        style={{ background: v.css, borderColor: profile.accentColor === k ? '#fff' : 'transparent' }} />
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {section === 'ai' && (
+                        <div className="fade-in space-y-4">
+                            <div className="text-xs font-semibold tracking-widest" style={{ color: 'var(--muted)' }}>AI COACH</div>
+                            <div className="flex items-center justify-between p-4 rounded-xl" style={{ background: 'var(--card)', border: '1px solid var(--border)' }}>
+                                <div>
+                                    <div className="font-semibold text-sm">Enable AI Coaching</div>
+                                    <div className="text-xs mt-0.5" style={{ color: 'var(--muted)' }}>Uses Gemini for briefs, chat, and summaries. Defaults to Gemini 3 Flash Preview.</div>
+                                </div>
+                                <button onClick={() => dispatch({ type: 'SET_AI_CONFIG', fields: { enabled: !aiConfig.enabled } })}
+                                    className="w-12 h-6 rounded-full transition-all flex-shrink-0"
+                                    style={{ background: aiConfig.enabled ? 'var(--accent)' : 'var(--border)', position: 'relative' }}>
+                                    <div className="w-4 h-4 rounded-full bg-white absolute top-1 transition-all" style={{ left: aiConfig.enabled ? 28 : 4 }} />
+                                </button>
+                            </div>
+                            {aiConfig.enabled && (
+                                <div className="space-y-3 fade-in">
+                                    <div>
+                                        <label className="block text-xs font-semibold tracking-wider mb-1.5" style={{ color: 'var(--muted)' }}>GEMINI API KEY</label>
+                                        <input type="password" value={aiConfig.apiKey} onChange={(e) => dispatch({ type: 'SET_AI_CONFIG', fields: { apiKey: e.target.value } })}
+                                            placeholder="AIza..."
+                                            className="w-full px-4 py-3 rounded-lg text-sm font-mono"
+                                            style={{ background: 'var(--card)', border: '1px solid var(--border)', color: 'var(--text)' }} />
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-semibold tracking-wider mb-1.5" style={{ color: 'var(--muted)' }}>MODEL</label>
+                                        <select value={aiConfig.model} onChange={(e) => dispatch({ type: 'SET_AI_CONFIG', fields: { model: e.target.value } })}
+                                            className="w-full px-4 py-3 rounded-lg text-sm"
+                                            style={{ background: 'var(--card)', border: '1px solid var(--border)', color: 'var(--text)' }}>
+                                            <option value="gemini-3-flash-preview">Gemini 3 Flash Preview (Default)</option>
+                                            <option value="gemini-3.1-flash-lite-preview">Gemini 3.1 Flash Lite Preview (Lightweight)</option>
+                                            <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+                                            <option value="gemini-flash-latest">Gemini Flash Latest (Alias)</option>
+                                        </select>
+                                        <div className="text-xs mt-1.5" style={{ color: 'var(--muted)' }}>
+                                            Deprecated saved model IDs are auto-upgraded to the latest supported default.
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {section === 'constraints' && (
+                        <div className="fade-in space-y-4">
+                            <div className="text-xs font-semibold tracking-widest" style={{ color: 'var(--muted)' }}>CONSTRAINTS</div>
+                            {Object.entries(constraints.injuries).map(([k, active]) => (
+                                <div key={k} className="flex items-center justify-between p-4 rounded-xl" style={{ background: 'var(--card)', border: '1px solid var(--border)' }}>
+                                    <div className="font-medium capitalize">{k}</div>
+                                    <button onClick={() => dispatch({ type: 'SET_INJURIES', injuries: { [k]: !active } })}
+                                        className="w-12 h-6 rounded-full transition-all flex-shrink-0"
+                                        style={{ background: active ? '#ef4444' : 'var(--border)', position: 'relative' }}>
+                                        <div className="w-4 h-4 rounded-full bg-white absolute top-1 transition-all" style={{ left: active ? 28 : 4 }} />
+                                    </button>
+                                </div>
+                            ))}
+                            <div className="card p-4">
+                                <div className="text-xs font-semibold tracking-widest mb-2" style={{ color: 'var(--muted)' }}>BLOCKED PATTERNS</div>
+                                <input value={blockedPatternsInput} onChange={(e) => setBlockedPatternsInput(e.target.value)}
+                                    placeholder="comma separated, e.g. deadlift, burpee"
+                                    className="w-full px-3 py-2 rounded text-xs"
+                                    style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }} />
+                                <button onClick={saveBlockedPatterns} className="btn-ghost w-full py-2 text-xs font-semibold mt-2">Save Patterns</button>
+                            </div>
+                            {Object.keys(constraints.customSubstitutions || {}).length > 0 && (
+                                <div className="card p-4">
+                                    <div className="text-xs font-semibold tracking-widest mb-2" style={{ color: 'var(--muted)' }}>CUSTOM SUBSTITUTIONS</div>
+                                    <div className="space-y-1.5">
+                                        {Object.entries(constraints.customSubstitutions).map(([from, to]) => (
+                                            <div key={from} className="text-xs flex justify-between" style={{ color: 'var(--muted)' }}>
+                                                <span>{from}</span>
+                                                <span className="accent">→ {to}</span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {section === 'v5import' && (
+                        <div className="fade-in space-y-3">
+                            <div className="text-xs font-semibold tracking-widest" style={{ color: 'var(--muted)' }}>V6/V5 DATA IMPORT</div>
+                            <button onClick={previewV5Import} className="btn-ghost w-full py-3 text-sm font-semibold">Preview `miyamoto_v5` Data</button>
+                            {v5Preview && (
+                                <div className="card p-4 text-xs" style={{ color: 'var(--muted)' }}>
+                                    <div>Name: <span style={{ color: 'var(--text)' }}>{v5Preview.name}</span></div>
+                                    <div>Sessions: <span style={{ color: 'var(--text)' }}>{v5Preview.sessions}</span></div>
+                                    <div>Disciplines: <span style={{ color: 'var(--text)' }}>{v5Preview.disciplines || 'none'}</span></div>
+                                </div>
+                            )}
+                            {v5Error && <div className="text-xs" style={{ color: '#ef4444' }}>{v5Error}</div>}
+                            <button onClick={importV5Now} className="btn-accent w-full py-3 text-sm font-bold">Import From `miyamoto_v5`</button>
+                            <button onClick={restorePreImportBackup} className="btn-ghost w-full py-3 text-sm font-semibold">Restore Pre-Import Backup</button>
+                        </div>
+                    )}
+
+                    {section === 'data' && (
+                        <div className="fade-in space-y-3">
+                            <div className="text-xs font-semibold tracking-widest" style={{ color: 'var(--muted)' }}>DATA MANAGEMENT</div>
+                            <button onClick={exportData}
+                                className="btn-ghost w-full py-4 text-sm font-semibold flex items-center justify-center gap-2">
+                                {exportDone ? <><Icon.Check /> Exported!</> : '⬇️ Export Backup (JSON)'}
+                            </button>
+                            <button onClick={() => fileRef.current?.click()}
+                                className="btn-ghost w-full py-4 text-sm font-semibold">⬆️ Import Backup (JSON)</button>
+                            <input ref={fileRef} type="file" accept=".json" onChange={importData} className="hidden" />
+                            <div className="pt-4 border-t" style={{ borderColor: 'var(--border)' }}>
+                                {!resetConfirm ? (
+                                    <button onClick={() => setResetConfirm(true)}
+                                        className="w-full py-4 text-sm font-semibold rounded-xl"
+                                        style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', color: '#ef4444' }}>
+                                        🗑️ Reset All Data
+                                    </button>
+                                ) : (
+                                    <div className="p-4 rounded-xl text-sm space-y-3" style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.4)' }}>
+                                        <p style={{ color: '#ef4444' }}>This will erase all your sessions, progress, and settings. Are you certain?</p>
+                                        <div className="flex gap-2">
+                                            <button onClick={() => setResetConfirm(false)} className="btn-ghost flex-1 py-2 text-sm">Cancel</button>
+                                            <button onClick={() => dispatch({ type: 'RESET_ALL' })}
+                                                className="flex-1 py-2 rounded text-sm font-bold"
+                                                style={{ background: '#ef4444', color: '#fff' }}>Yes, Reset</button>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                            <div className="text-center text-xs pt-2" style={{ color: 'var(--muted)' }}>
+                                Miyamoto V7.0 · {state.sessionLogs.length} sessions · {(JSON.stringify(state).length / 1024).toFixed(1)}KB stored
+                            </div>
+                        </div>
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+}
+
+// ─── NAV BAR ─────────────────────────────────────────────────────────────────
+function NavBar({ view, dispatch, hasActive }) {
+const tabs = [
+{ id: 'home', label: 'Home', icon: Icon.Home },
+{ id: 'train', label: 'Train', icon: Icon.Train },
+{ id: 'progress', label: 'Progress', icon: Icon.Chart },
+{ id: 'history', label: 'History', icon: Icon.List },
+{ id: 'settings', label: 'Settings', icon: Icon.Settings },
+];
+return (
+<nav className="nav-bar">
+    {tabs.map(t => {
+    const active = view === t.id;
+    const isTrainWithSession = t.id === 'train' && hasActive;
+    return (
+    <button key={t.id} onClick={()=> dispatch({ type: 'SET_VIEW', view: t.id })}
+        className="flex-1 flex flex-col items-center justify-center gap-0.5 transition-all"
+        style={{ color: active ? 'var(--accent)' : 'var(--muted)', borderTop: active ? '2px solid var(--accent)' : '2px solid transparent' }}>
+        <t.icon style={{ width: 18, height: 18 }} />
+        <span className="text-xs font-semibold" style={{ fontSize: 10 }}>{isTrainWithSession ? 'ACTIVE' :
+            t.label.toUpperCase()}</span>
+        {isTrainWithSession &&
+        <div className="w-1.5 h-1.5 rounded-full pulse" style={{ background: '#22c55e' }} />}
+    </button>
+    );
+    })}
+</nav>
+);
+}
+
+// ─── APP ROOT ─────────────────────────────────────────────────────────────────
+const LS_KEY = 'miyamoto_v7';
+
+function App() {
+const saved = useMemo(() => {
 try {
-  if (typeof window !== 'undefined' && window.localStorage) {
-    const saved = localStorage.getItem('miyamoto_v5');
-    if (saved) return migrateState(JSON.parse(saved));
-  }
-} catch(e) {}
-return migrateState(init);
-  });
+const raw = localStorage.getItem(LS_KEY);
+return raw ? migrateState(JSON.parse(raw)) : INITIAL_STATE;
+} catch { return INITIAL_STATE; }
+}, []);
 
-  useEffect(() => {
-try {
-  if (typeof window !== 'undefined' && window.localStorage) {
-    localStorage.setItem('miyamoto_v5', JSON.stringify(state));
-  }
-} catch(e) {}
-  }, [state]);
+const [state, dispatch] = useReducer(appReducer, saved);
 
-  if (!state.onboarded) {
-return <OnboardingView state={state} dispatch={dispatch} />;
-  }
+// Apply saved accent on load
+useEffect(() => { applyAccent(state.profile?.accentColor || 'red'); }, []);
 
-  const views = {
-home:     <HomeView     state={state} dispatch={dispatch} />,
-train:    <TrainView    state={state} dispatch={dispatch} />,
-progress: <ProgressView state={state} dispatch={dispatch} />,
-history:  <HistoryView  state={state} />,
-settings: <SettingsView state={state} dispatch={dispatch} />,
-  };
+// Persist state
+useEffect(() => {
+try { localStorage.setItem(LS_KEY, JSON.stringify(state)); } catch {}
+}, [state]);
 
-  const navTabs = [
-{ id:'home',     label:'HOME',     icon:Home },
-{ id:'train',    label:'TRAIN',    icon:Dumbbell },
-{ id:'progress', label:'PROGRESS', icon:TrendingUp },
-{ id:'history',  label:'HISTORY',  icon:List },
-{ id:'settings', label:'SETTINGS', icon:Settings },
-  ];
+const { view, onboarded, activeSession } = state;
 
-  return (
-<div className="bg-neutral-950 text-neutral-100 font-mono" style={{ minHeight: '100dvh' }}>
-  <div className="max-w-2xl mx-auto pt-6 px-4" style={{ paddingBottom: 'calc(5rem + env(safe-area-inset-bottom, 0px))' }}>
-    {views[state.view]}
-  </div>
+if (!onboarded) return React.createElement(OnboardingView, { state, dispatch });
 
-  <div className="fixed bottom-0 left-0 right-0 bg-neutral-950 border-t border-neutral-800"
-       style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}>
-    <div className="max-w-2xl mx-auto flex">
-      {navTabs.map(({ id, label, icon: Icon }) => (
-        <button
-          key={id}
-          onClick={() => dispatch({ type: 'SET_VIEW', payload: id })}
-          style={{ WebkitTapHighlightColor: 'transparent' }}
-          className={`flex-1 py-4 flex flex-col items-center gap-1 border-t-2 transition active:bg-neutral-900 ${
-            state.view === id
-              ? 'text-red-500 border-red-500'
-              : 'text-neutral-600 border-transparent'
-          }`}
-        >
-          <Icon size={20} />
-          <span className="text-xs uppercase tracking-widest">{label}</span>
-        </button>
-      ))}
+return (
+<div style={{ display: 'flex' , flexDirection: 'column' , height: '100%' }}>
+    <div
+      key={view}
+      style={{
+        flex: 1,
+        minHeight: 0,
+        overflowY: 'auto',
+        WebkitOverflowScrolling: 'touch'
+      }}
+    >
+        {view === 'home' && React.createElement(HomeView, { state, dispatch })}
+        {view === 'train' && React.createElement(TrainView, { state, dispatch })}
+        {view === 'progress' && React.createElement(ProgressView, { state, dispatch })}
+        {view === 'history' && React.createElement(HistoryView, { state, dispatch })}
+        {view === 'settings' && React.createElement(SettingsView, { state, dispatch })}
     </div>
-  </div>
+    <NavBar view={view} dispatch={dispatch} hasActive={!!activeSession} />
 </div>
-  );
+);
 }
+
+
+export default App;

@@ -13,6 +13,33 @@ An intelligent, adaptive training system for complete martial arts development c
 4. **Complete** 2-step onboarding (name → age/bodyweight)
 5. **Start training** and track progress
 
+## Run HTML Runtime (V7 Canonical)
+
+`index.html` is the canonical runtime entry for V7.
+
+### 1) Double-click mode (`file://`)
+- Open `/Users/bg/Desktop/Learning/Project_Miyamoto/index.html` directly.
+- Runtime libraries are vendored in `./vendor/`, so app boot does not require internet.
+- Service worker / installability is disabled automatically in `file://` mode.
+
+### 2) Localhost mode (recommended for development)
+
+```bash
+cd /Users/bg/Desktop/Learning/Project_Miyamoto
+python3 -m http.server 8080
+```
+
+Open `http://localhost:8080/index.html`.
+
+### 3) GitHub Pages mode
+- Repository: `https://github.com/BGbhai/project-miyamoto`
+- Source: `main` branch, root folder (`/`)
+- Expected URL: `https://bgbhai.github.io/project-miyamoto/`
+
+Notes:
+- Runtime script paths are relative (`./vendor/...`), so they resolve correctly in `file://`, localhost, and GitHub Pages subpath hosting.
+- If required globals fail to load, boot guard renders a diagnostic card via `window.__MIYAMOTO_BOOT_ISSUES__`.
+
 ## Architecture
 
 ### Single File: `adaptive_training_platform.jsx` (914 lines)
