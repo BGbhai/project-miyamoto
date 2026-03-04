@@ -209,6 +209,10 @@ const GEMINI_ALLOWED_MODELS = ['gemini-3-flash-preview', 'gemini-2.5-flash', 'ge
 const GEMINI_DEFAULT_MODEL = 'gemini-3-flash-preview';
 const GEMINI_RETRY_DELAYS_MS = [1500, 3000, 6000];
 const WEEKLY_SUMMARY_COOLDOWN_MS = 12 * 60 * 60 * 1000;
+const AI_PLAN_REQUEST_TIMEOUT_MS = 25000;
+const AI_PLAN_COOLDOWN_MS = 15 * 60 * 1000;
+const AI_PLAN_RETRY_DELAYS_MS = [1000];
+const AI_PLAN_MAX_RETRY_AFTER_MS = 15000;
 const AI_PLAN_FRESHNESS_HOURS = 16;
 const AI_PLANNER_ALLOWED_TYPES = new Set(SESSION_TYPES);
 const AI_PRIMARY_PLAN_SOURCES = new Set(['ai', 'ai_guardrail_corrected']);
@@ -796,17 +800,42 @@ exercises,
   };
 }
 
-async function callGeminiWithRetry({ apiKey, endpoint, body, requestType = 'Gemini request' }) {
+async function callGeminiWithRetry({
+  apiKey,
+  endpoint,
+  body,
+  requestType = 'Gemini request',
+  timeoutMs = null,
+  retryDelaysMs = GEMINI_RETRY_DELAYS_MS,
+  maxRetryAfterMs = Number.POSITIVE_INFINITY,
+}) {
   if (!apiKey) throw new Error('Gemini API key missing.');
-  const maxRetryIndex = GEMINI_RETRY_DELAYS_MS.length;
+  const delays = Array.isArray(retryDelaysMs) && retryDelaysMs.length
+? retryDelaysMs.map(ms => Math.max(0, toNum(ms, 0)))
+: GEMINI_RETRY_DELAYS_MS;
+  const maxRetryIndex = delays.length;
+  const hasTimeout = Number.isFinite(timeoutMs) && timeoutMs > 0;
+  const boundedMaxRetryAfterMs = Number.isFinite(maxRetryAfterMs) && maxRetryAfterMs >= 0
+? maxRetryAfterMs
+: Number.POSITIVE_INFINITY;
 
   for (let attempt = 0; attempt <= maxRetryIndex; attempt++) {
 try {
-  const res = await fetch(`${endpoint}?key=${apiKey}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timeoutId = hasTimeout && controller
+    ? setTimeout(() => controller.abort(), timeoutMs)
+    : null;
+  let res;
+  try {
+    res = await fetch(`${endpoint}?key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: controller?.signal,
+    });
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
 
   if (res.ok) return await res.json();
 
@@ -826,14 +855,26 @@ try {
   if (!isTransient || attempt === maxRetryIndex) throw err;
 
   const jitter = Math.floor(Math.random() * 501);
-  const retryAfterMs = err.retryAfterSeconds ? err.retryAfterSeconds * 1000 : 0;
-  const waitMs = Math.max(GEMINI_RETRY_DELAYS_MS[attempt] + jitter, retryAfterMs);
+  const retryAfterMsRaw = err.retryAfterSeconds ? err.retryAfterSeconds * 1000 : 0;
+  const retryAfterMs = Math.min(retryAfterMsRaw, boundedMaxRetryAfterMs);
+  const baseDelayMs = delays[attempt] ?? delays[delays.length - 1] ?? 0;
+  const waitMs = Math.max(baseDelayMs + jitter, retryAfterMs);
   await sleepMs(waitMs);
 } catch (error) {
-  const isNetwork = error instanceof TypeError || error?.name === 'TypeError';
-  if (!isNetwork || attempt === maxRetryIndex) throw error;
+  const isAbort = error?.name === 'AbortError';
+  const transformedError = isAbort
+    ? Object.assign(new Error(`${requestType} timed out${hasTimeout ? ` after ${Math.round(timeoutMs)}ms` : ''}.`), {
+        status: 0,
+        code: 'TIMEOUT',
+        failureType: 'timeout',
+        isTimeout: true,
+      })
+    : error;
+  const isNetwork = transformedError instanceof TypeError || transformedError?.name === 'TypeError';
+  if (!(isNetwork || isAbort) || attempt === maxRetryIndex) throw transformedError;
   const jitter = Math.floor(Math.random() * 501);
-  await sleepMs(GEMINI_RETRY_DELAYS_MS[attempt] + jitter);
+  const baseDelayMs = delays[attempt] ?? delays[delays.length - 1] ?? 0;
+  await sleepMs(baseDelayMs + jitter);
 }
   }
 
@@ -890,6 +931,10 @@ aiPlanStatus: 'idle',
 aiInterview: null,
 aiPlanLastError: null,
 aiPlanSource: 'fallback_engine',
+aiPlanCooldownUntil: null,
+aiPlanLastAttemptAt: null,
+aiPlanLastFailureCode: null,
+aiPlanLastFailureType: null,
 aiPlanNeedsRefresh: true,
 martialArtsNextPhase: 'technical',
 martialArtsNextRationale: 'Rebuild technical consistency first.',
@@ -2209,7 +2254,7 @@ async function callGeminiPlanningWithRetry({ apiKey, model, state, goals, interv
 contents: [{ parts: [{ text: prompt }] }],
 generationConfig: {
   temperature: 0.2,
-  maxOutputTokens: 2048,
+  maxOutputTokens: 1024,
   responseMimeType: 'application/json',
   responseSchema: schema,
 },
@@ -2219,6 +2264,9 @@ apiKey,
 endpoint,
 body,
 requestType: 'AI workout planning',
+timeoutMs: AI_PLAN_REQUEST_TIMEOUT_MS,
+retryDelaysMs: AI_PLAN_RETRY_DELAYS_MS,
+maxRetryAfterMs: AI_PLAN_MAX_RETRY_AFTER_MS,
   });
   const rawText = sanitizeGeminiText(extractGeminiText(payload));
   if (!rawText) throw createGeminiParseError('planning', '', 'blocked_or_empty', 'primary');
@@ -2904,6 +2952,10 @@ aiPlanLastError: state.planState?.aiPlanLastError || null,
 aiPlanSource: planningEnabled
   ? (hasUsableAIPlan ? aiPlanSource : (state.planState?.aiPlanSource || 'fallback_engine'))
   : 'fallback_engine',
+aiPlanCooldownUntil: state.planState?.aiPlanCooldownUntil || null,
+aiPlanLastAttemptAt: state.planState?.aiPlanLastAttemptAt || null,
+aiPlanLastFailureCode: state.planState?.aiPlanLastFailureCode ?? null,
+aiPlanLastFailureType: state.planState?.aiPlanLastFailureType || null,
 aiPlanNeedsRefresh: !!state.planState?.aiPlanNeedsRefresh,
 martialArtsNextPhase: martialNext.phaseTarget,
 martialArtsNextRationale: martialNext.rationale,
@@ -3443,6 +3495,13 @@ planState: {
   aiInterview: raw.planState?.aiInterview || null,
   aiPlanLastError: raw.planState?.aiPlanLastError || null,
   aiPlanSource: raw.planState?.aiPlanSource || (raw.planState?.aiPlan ? 'ai' : 'fallback_engine'),
+  aiPlanCooldownUntil: raw.planState?.aiPlanCooldownUntil || null,
+  aiPlanLastAttemptAt: raw.planState?.aiPlanLastAttemptAt || null,
+  aiPlanLastFailureCode: Number.isFinite(toNum(raw.planState?.aiPlanLastFailureCode, NaN))
+    && toNum(raw.planState?.aiPlanLastFailureCode, NaN) > 0
+    ? toNum(raw.planState?.aiPlanLastFailureCode, NaN)
+    : null,
+  aiPlanLastFailureType: raw.planState?.aiPlanLastFailureType || null,
   aiPlanNeedsRefresh: raw.planState?.aiPlanNeedsRefresh !== undefined ? !!raw.planState.aiPlanNeedsRefresh : true,
   martialArtsNextPhase: raw.planState?.martialArtsNextPhase || null,
   martialArtsNextRationale: raw.planState?.martialArtsNextRationale || null,
@@ -3680,6 +3739,7 @@ case 'GENERATE_AI_PLAN':
       ...state.planState,
       aiPlanStatus: 'generating',
       aiPlanLastError: null,
+      aiPlanLastAttemptAt: new Date().toISOString(),
     },
   };
 case 'SET_AI_PLAN': {
@@ -3691,6 +3751,10 @@ case 'SET_AI_PLAN': {
     aiPlanStatus: action.payload?.aiPlan ? 'ready' : state.planState.aiPlanStatus,
     aiPlanLastError: null,
     aiPlanSource: action.payload?.aiPlan ? source : state.planState.aiPlanSource,
+    aiPlanCooldownUntil: null,
+    aiPlanLastAttemptAt: state.planState?.aiPlanLastAttemptAt || new Date().toISOString(),
+    aiPlanLastFailureCode: null,
+    aiPlanLastFailureType: null,
     aiPlanNeedsRefresh: false,
     scheduledSlotsByDate: action.payload?.scheduledSlotsByDate || state.planState.scheduledSlotsByDate,
   };
@@ -3706,6 +3770,9 @@ case 'SET_AI_PLAN': {
 }
 case 'SET_AI_PLAN_ERROR': {
   const fallback = fallbackToDeterministicPlan(state, action.payload?.error || 'AI planning failed.');
+  const nowIso = new Date().toISOString();
+  const cooldownUntil = action.payload?.cooldownUntil || new Date(Date.now() + AI_PLAN_COOLDOWN_MS).toISOString();
+  const failureCodeRaw = toNum(action.payload?.status, NaN);
   const next = {
     ...state,
     aiConfig: {
@@ -3717,6 +3784,25 @@ case 'SET_AI_PLAN_ERROR': {
       aiPlanStatus: fallback.status,
       aiPlanLastError: fallback.reason,
       aiPlanSource: fallback.source,
+      aiPlanCooldownUntil: cooldownUntil,
+      aiPlanLastAttemptAt: action.payload?.lastAttemptAt || state.planState?.aiPlanLastAttemptAt || nowIso,
+      aiPlanLastFailureCode: Number.isFinite(failureCodeRaw) && failureCodeRaw > 0 ? failureCodeRaw : null,
+      aiPlanLastFailureType: action.payload?.failureType || 'other',
+      aiPlanNeedsRefresh: false,
+    },
+  };
+  return { ...next, planState: buildRollingPlanForState(next) };
+}
+case 'REQUEST_AI_PLAN_RETRY': {
+  const next = {
+    ...state,
+    planState: {
+      ...state.planState,
+      aiPlanStatus: 'idle',
+      aiPlanLastError: null,
+      aiPlanCooldownUntil: null,
+      aiPlanLastFailureCode: null,
+      aiPlanLastFailureType: null,
       aiPlanNeedsRefresh: true,
     },
   };
@@ -4472,6 +4558,13 @@ function HomeView({ state, dispatch }) {
   const aiPlanFresh = Number.isFinite(aiPlanGeneratedAtMs)
 && (Date.now() - aiPlanGeneratedAtMs) <= (AI_PLAN_FRESHNESS_HOURS * 60 * 60 * 1000);
   const aiPlanHasToday = !!(state.planState?.aiPlan?.days || []).find(day => day?.date === todayDateKey);
+  const aiPlanCooldownUntilMs = state.planState?.aiPlanCooldownUntil
+? Date.parse(state.planState.aiPlanCooldownUntil)
+: NaN;
+  const aiPlanInCooldown = Number.isFinite(aiPlanCooldownUntilMs) && Date.now() < aiPlanCooldownUntilMs;
+  const aiPlanCooldownMinutes = aiPlanInCooldown
+? Math.max(1, Math.ceil((aiPlanCooldownUntilMs - Date.now()) / 60000))
+: 0;
   const aiPlanNeedsRefresh = !!state.planState?.aiPlanNeedsRefresh || !aiPlanFresh || !aiPlanHasToday;
   const todaySlots = state.planState?.scheduledSlotsByDate?.[todayDateKey] || {};
   const martialNextPhase = state.planState?.martialArtsNextPhase || state.progression?.martialArts?.currentPhase || 'technical';
@@ -4560,6 +4653,9 @@ callGeminiExerciseQA(state.aiConfig.apiKey, state.aiConfig.endpoint, question, c
     });
   });
   };
+  const retryAIPlanNow = () => {
+dispatch({ type: 'REQUEST_AI_PLAN_RETRY' });
+  };
 
   const submitDailyInterview = () => {
 const questions = interviewForToday?.questions || [];
@@ -4586,6 +4682,7 @@ if (!state.onboarded || !planningEnabled) return;
 if (!state.aiConfig?.apiKey) return;
 if (!interviewCompletedToday) return;
 if (!aiPlanNeedsRefresh) return;
+if (aiPlanInCooldown) return;
 if (aiPlanStatus === 'generating') return;
 
 dispatch({ type: 'GENERATE_AI_PLAN' });
@@ -4632,10 +4729,27 @@ callGeminiPlanningWithRetry({
   });
 }).catch((err) => {
   const status = Number(err?.status || 0);
+  const failureType = err?.isTimeout
+    ? 'timeout'
+    : err?.isGeminiParseError
+      ? 'parse'
+      : status === 429
+        ? 'rate_limit'
+        : (err instanceof TypeError || err?.name === 'TypeError')
+          ? 'network'
+          : 'other';
   const message = status === 429 || status === 503
     ? `AI planning is temporarily unavailable (${status}). Fallback plan is active.`
     : (err?.message || 'AI planning failed. Fallback plan is active.');
-  dispatch({ type: 'SET_AI_PLAN_ERROR', payload: { error: message } });
+  dispatch({
+    type: 'SET_AI_PLAN_ERROR',
+    payload: {
+      error: message,
+      status,
+      failureType,
+      lastAttemptAt: new Date().toISOString(),
+    },
+  });
 });
   }, [
 state.onboarded,
@@ -4645,6 +4759,7 @@ state.aiConfig?.planningModel,
 state.aiConfig?.model,
 interviewCompletedToday,
 aiPlanNeedsRefresh,
+aiPlanInCooldown,
 aiPlanStatus,
 state.planState?.skipDebtScore,
 state.planState?.consecutiveSkippedSlots,
@@ -4787,8 +4902,22 @@ state.planState.weeklySummaryCooldownUntil,
       {aiPlanStatus === 'generating' && (
         <div className="text-neutral-500 font-mono text-xs animate-pulse">Generating AI plan...</div>
       )}
+      {aiPlanInCooldown && (
+        <div className="text-neutral-500 font-mono text-xs">
+          Planner cooldown active after failure. Auto retry resumes in ~{aiPlanCooldownMinutes}m.
+        </div>
+      )}
       {state.planState?.aiPlanLastError && (
         <div className="text-orange-400 font-mono text-xs">{state.planState.aiPlanLastError}</div>
+      )}
+      {(aiPlanInCooldown || aiPlanStatus === 'fallback') && (
+        <button
+          onClick={retryAIPlanNow}
+          className="mt-2 w-full border border-yellow-600 py-2 font-mono text-xs uppercase text-yellow-500 font-bold active:bg-neutral-900"
+          style={{ WebkitTapHighlightColor: 'transparent' }}
+        >
+          RETRY AI PLAN NOW
+        </button>
       )}
     </div>
   )}
