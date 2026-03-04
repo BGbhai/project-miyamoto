@@ -215,6 +215,12 @@ function createProgramConfig() {
     defaultSessionMinutes: 60,
     adaptationAggressiveness: 'moderate',
     priorityProfile: 'balanced_complete_athlete',
+    exerciseSelectionStrategy: 'progress_history_v2',
+    historyLookbackDays: 30,
+    hardNoRepeatDays: 2,
+    gymAnchorCount: 2,
+    dailyVariationSeedMode: 'date_type',
+    equipmentProfile: 'full_gym_bodyweight',
     useWearable: false,
     featureFlags: {
       adaptiveEngine: true,
@@ -857,6 +863,8 @@ function createPlanState() {
     weeklySummaryCooldownUntil: null,
     weeklySummaryLastAttemptAt: null,
     weeklySummaryLastError: null,
+    exerciseHistoryIndex: {},
+    lastGeneratedAtByType: {},
   };
 }
 
@@ -990,6 +998,126 @@ const EXERCISE_DB = {
     { name:'Loaded Stretching',      duration:'20min', focus:'Jefferson curl, pancake drill, RDL stretch',         visual:'mobility',  muscles: ['fullBody'] },
   ],
 };
+
+const EXERCISE_EXPANSION_TARGETS = {
+  strength: { legs: 24, upper: 24, full: 14 },
+  calisthenics: { pullUp: 15, pushUp: 13, squat: 11, core: 12, handstand: 13 },
+  running: 14,
+  striking: 16,
+  grappling: 16,
+  mobility: 15,
+};
+
+const DOMAIN_VARIANT_PROFILES = {
+  strength: [
+    { label: 'Tempo Focus', mode: 'suffix', rpeAdjust: -1, difficultyTier: 'advanced', note: '3-1-1 tempo emphasis.' },
+    { label: 'Paused Reps', mode: 'suffix', rpeAdjust: -1, difficultyTier: 'advanced', note: '1-second pause in hardest position.' },
+    { label: 'Volume Wave', mode: 'suffix', rpeAdjust: -1, setAdjust: 1, note: 'Volume-biased wave for technical volume.' },
+    { label: 'Power Intent', mode: 'suffix', rpeAdjust: 0, note: 'Move explosively while keeping clean mechanics.' },
+    { label: 'Control Set', mode: 'suffix', rpeAdjust: -1, note: 'Deliberate eccentric and controlled concentric.' },
+  ],
+  calisthenics: [
+    { label: 'Technique Density', mode: 'suffix', rpeAdjust: 0, note: 'Short rests and strict form consistency.' },
+    { label: 'Eccentric Control', mode: 'suffix', rpeAdjust: -1, note: 'Slow lowering emphasis each rep.' },
+    { label: 'Pause Holds', mode: 'suffix', rpeAdjust: -1, note: 'Pause at weakest range for control.' },
+    { label: 'Volume Ladder', mode: 'suffix', rpeAdjust: 0, setAdjust: 1, note: 'Ladder-style accumulation.' },
+  ],
+  running: [
+    { label: 'Negative Split', mode: 'suffix', rpeAdjust: 0, note: 'Finish last third slightly faster.' },
+    { label: 'Cadence Focus', mode: 'suffix', rpeAdjust: -1, note: 'Keep cadence smooth and efficient.' },
+    { label: 'Controlled Start', mode: 'suffix', rpeAdjust: -1, note: 'Start easy and build gradually.' },
+    { label: 'Strong Finish', mode: 'suffix', rpeAdjust: 0, note: 'Final segment at controlled push.' },
+  ],
+  striking: [
+    { label: 'Defense Emphasis', mode: 'suffix', rpeAdjust: -1, note: 'Prioritize defensive reactions and resets.' },
+    { label: 'Counter Timing', mode: 'suffix', rpeAdjust: 0, note: 'Counter after first defensive beat.' },
+    { label: 'Footwork Priority', mode: 'suffix', rpeAdjust: -1, note: 'Angle changes before combinations.' },
+    { label: 'Power Cycle', mode: 'suffix', rpeAdjust: 1, note: 'Short bursts of higher power output.' },
+  ],
+  grappling: [
+    { label: 'Pressure Control', mode: 'suffix', rpeAdjust: 0, note: 'Maintain pressure while transitioning.' },
+    { label: 'Chain Flow', mode: 'suffix', rpeAdjust: 0, note: 'Link two to three actions each round.' },
+    { label: 'Positional Retention', mode: 'suffix', rpeAdjust: -1, note: 'Hold dominant position before advancing.' },
+    { label: 'Scramble Responses', mode: 'suffix', rpeAdjust: 1, note: 'Short scramble exchanges with control.' },
+  ],
+  mobility: [
+    { label: 'Breath-Led', mode: 'suffix', rpeAdjust: -1, note: 'Slow breath-led transitions.' },
+    { label: 'Posture Reset', mode: 'suffix', rpeAdjust: -1, note: 'Posture and alignment emphasis.' },
+    { label: 'Range Build', mode: 'suffix', rpeAdjust: 0, note: 'Progressively increase ROM each set.' },
+    { label: 'Tension Release', mode: 'suffix', rpeAdjust: -1, note: 'Lower tone and ease joint stiffness.' },
+  ],
+};
+
+function applyVariantDescriptor(base, descriptor, domain) {
+  const baseName = String(base.name || '').trim();
+  const variantName = descriptor.mode === 'prefix'
+    ? `${descriptor.label} ${baseName}`
+    : `${baseName} — ${descriptor.label}`;
+  const variantGroup = base.variantGroup || slugify(baseName);
+  const nextSets = base.sets ? clamp(toNum(base.sets, 0) + toNum(descriptor.setAdjust, 0), 1, 10) : base.sets;
+  const nextRPE = base.rpe != null
+    ? clamp(toNum(base.rpe, 7) + toNum(descriptor.rpeAdjust, 0), 3, 10)
+    : (base.targetRPE != null ? clamp(toNum(base.targetRPE, 6) + toNum(descriptor.rpeAdjust, 0), 2, 10) : undefined);
+
+  return {
+    ...base,
+    name: variantName,
+    sets: nextSets,
+    rpe: base.rpe != null ? nextRPE : base.rpe,
+    targetRPE: base.targetRPE != null ? nextRPE : base.targetRPE,
+    focus: base.focus ? `${base.focus}. ${descriptor.note}` : base.focus,
+    cue: base.cue ? `${base.cue}. ${descriptor.note}` : base.cue,
+    desc: base.desc ? `${base.desc}. ${descriptor.note}` : base.desc,
+    variantGroup,
+    difficultyTier: descriptor.difficultyTier || base.difficultyTier || 'base',
+    domain: base.domain || domain,
+  };
+}
+
+function expandListToTarget(list, target, domain) {
+  const baseList = Array.isArray(list) ? list.filter(Boolean) : [];
+  if (baseList.length >= target || baseList.length === 0) return baseList;
+  const variants = DOMAIN_VARIANT_PROFILES[domain] || DOMAIN_VARIANT_PROFILES.strength;
+  const expanded = [...baseList];
+  const seenNames = new Set(baseList.map(item => item.name));
+
+  let cursor = 0;
+  let guard = 0;
+  while (expanded.length < target && guard < 10000) {
+    const base = baseList[cursor % baseList.length];
+    const descriptor = variants[Math.floor(cursor / baseList.length) % variants.length];
+    const candidate = applyVariantDescriptor(base, descriptor, domain);
+    if (!seenNames.has(candidate.name)) {
+      expanded.push(candidate);
+      seenNames.add(candidate.name);
+    }
+    cursor += 1;
+    guard += 1;
+  }
+  return expanded;
+}
+
+function expandExerciseCatalogLarge(db) {
+  return {
+    ...db,
+    strength: {
+      legs: expandListToTarget(db.strength.legs, EXERCISE_EXPANSION_TARGETS.strength.legs, 'strength'),
+      upper: expandListToTarget(db.strength.upper, EXERCISE_EXPANSION_TARGETS.strength.upper, 'strength'),
+      full: expandListToTarget(db.strength.full, EXERCISE_EXPANSION_TARGETS.strength.full, 'strength'),
+    },
+    calisthenics: {
+      pullUp: expandListToTarget(db.calisthenics.pullUp, EXERCISE_EXPANSION_TARGETS.calisthenics.pullUp, 'calisthenics'),
+      pushUp: expandListToTarget(db.calisthenics.pushUp, EXERCISE_EXPANSION_TARGETS.calisthenics.pushUp, 'calisthenics'),
+      squat: expandListToTarget(db.calisthenics.squat, EXERCISE_EXPANSION_TARGETS.calisthenics.squat, 'calisthenics'),
+      core: expandListToTarget(db.calisthenics.core, EXERCISE_EXPANSION_TARGETS.calisthenics.core, 'calisthenics'),
+      handstand: expandListToTarget(db.calisthenics.handstand, EXERCISE_EXPANSION_TARGETS.calisthenics.handstand, 'calisthenics'),
+    },
+    running: expandListToTarget(db.running, EXERCISE_EXPANSION_TARGETS.running, 'running'),
+    striking: expandListToTarget(db.striking, EXERCISE_EXPANSION_TARGETS.striking, 'striking'),
+    grappling: expandListToTarget(db.grappling, EXERCISE_EXPANSION_TARGETS.grappling, 'grappling'),
+    mobility: expandListToTarget(db.mobility, EXERCISE_EXPANSION_TARGETS.mobility, 'mobility'),
+  };
+}
 
 const MICRO_BREAK_MOBILITY_FLOWS = [
   {
@@ -1135,6 +1263,82 @@ function inferPattern(ex, domain) {
   return domain;
 }
 
+function inferMovementFamily(ex, domain) {
+  const n = (ex.name || '').toLowerCase();
+  if (n.includes('squat') || n.includes('lunge')) return 'squat';
+  if (n.includes('deadlift') || n.includes('hinge') || n.includes('rdl') || n.includes('swing')) return 'hinge';
+  if (n.includes('press') || n.includes('push-up') || n.includes('push up') || n.includes('dip')) return 'horizontal_push';
+  if (n.includes('overhead') || n.includes('handstand') || n.includes('hspu')) return 'vertical_push';
+  if (n.includes('pull') || n.includes('row') || n.includes('muscle-up') || n.includes('muscle up')) return 'vertical_pull';
+  if (n.includes('run') || n.includes('sprint') || n.includes('interval')) return 'locomotion';
+  if (domain === 'striking') return 'striking_skill';
+  if (domain === 'grappling') return 'grappling_skill';
+  if (domain === 'mobility') return 'mobility_flow';
+  if (n.includes('core') || n.includes('plank') || n.includes('sit')) return 'core_stability';
+  return inferPattern(ex, domain) || 'general';
+}
+
+function inferEquipmentTags(ex, domain) {
+  const n = (ex.name || '').toLowerCase();
+  const tags = new Set();
+  if (n.includes('bb') || n.includes('barbell') || n.includes('bench press') || n.includes('deadlift')) tags.add('barbell');
+  if (n.includes('db') || n.includes('dumbbell')) tags.add('dumbbell');
+  if (n.includes('kb') || n.includes('kettlebell')) tags.add('kettlebell');
+  if (n.includes('landmine')) tags.add('landmine');
+  if (n.includes('sled')) tags.add('sled');
+  if (n.includes('rope')) tags.add('battle_ropes');
+  if (n.includes('machine') || n.includes('leg press')) tags.add('machine');
+  if (n.includes('band')) tags.add('band');
+  if (n.includes('pull-up') || n.includes('pull up') || n.includes('muscle-up') || n.includes('muscle up')) tags.add('pullup_bar');
+  if (domain === 'running') tags.add('track_or_road');
+  if (domain === 'striking') tags.add('bag_or_pad');
+  if (domain === 'grappling') tags.add('mat_space');
+  if (domain === 'mobility' || tags.size === 0) tags.add('bodyweight');
+  if (domain === 'strength' && tags.size === 0) tags.add('barbell');
+  return [...tags];
+}
+
+function inferStimulusTags(ex, domain) {
+  const tags = new Set();
+  if (domain === 'strength') tags.add('strength');
+  if (domain === 'calisthenics') tags.add('technique');
+  if (domain === 'running') tags.add('aerobic');
+  if (domain === 'mobility') tags.add('mobility');
+  if (domain === 'striking' || domain === 'grappling') tags.add('skill');
+  const rpe = toNum(ex.rpe ?? ex.targetRPE, 0);
+  if (rpe >= 8) tags.add('power');
+  if (rpe >= 6 && rpe <= 8) tags.add('hypertrophy');
+  if (String(ex.duration || '').includes('min')) tags.add('conditioning');
+  return [...tags];
+}
+
+function inferContraindicationTags(ex, domain) {
+  const pattern = inferPattern(ex, domain);
+  const tags = new Set();
+  if (pattern === 'lower' || pattern === 'aerobic') tags.add('knee');
+  if (pattern === 'upper' || pattern === 'vertical-pull' || pattern === 'inversion') tags.add('shoulder');
+  if (pattern === 'lower' || pattern === 'hinge') tags.add('back');
+  if (domain === 'mobility') tags.clear();
+  return [...tags];
+}
+
+function normalizeTrackLabel(name = '') {
+  return String(name)
+    .toLowerCase()
+    .replace(/\([^)]*\)/g, ' ')
+    .replace(/\b(tempo|pause|paused|volume|wave|control|focus|power|density|eccentric|technique|ladder|negative split|cadence|controlled start|strong finish|defense emphasis|counter timing|footwork priority|pressure control|chain flow|positional retention|scramble responses|breath-led|posture reset|range build|tension release)\b/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+function inferProgressionTrackId(ex, domain, group) {
+  const variantBase = ex.variantGroup ? normalizeTrackLabel(ex.variantGroup) : normalizeTrackLabel(ex.name || '');
+  const fallback = normalizeTrackLabel(ex.name || '') || slugify(ex.name || 'exercise');
+  const label = variantBase || fallback;
+  return `${domain}_${group}_${slugify(label)}`;
+}
+
 function enrichExercise(item, domain, group, idx) {
   const id = item.id || `${domain}_${group}_${slugify(item.name)}_${idx + 1}`;
   return {
@@ -1143,6 +1347,12 @@ function enrichExercise(item, domain, group, idx) {
     domain: item.domain || domain,
     pattern: item.pattern || inferPattern(item, domain),
     progressionType: item.progressionType || inferProgressionType(item, domain),
+    movementFamily: item.movementFamily || inferMovementFamily(item, domain),
+    equipmentTags: Array.isArray(item.equipmentTags) ? item.equipmentTags : inferEquipmentTags(item, domain),
+    progressionTrackId: item.progressionTrackId || inferProgressionTrackId(item, domain, group),
+    stimulusTags: Array.isArray(item.stimulusTags) ? item.stimulusTags : inferStimulusTags(item, domain),
+    contraindicationTags: Array.isArray(item.contraindicationTags) ? item.contraindicationTags : inferContraindicationTags(item, domain),
+    variantGroup: item.variantGroup || slugify(normalizeTrackLabel(item.name || 'base')),
     prerequisites: Array.isArray(item.prerequisites) ? item.prerequisites : [],
     alternatives: Array.isArray(item.alternatives) ? item.alternatives : [],
     difficultyTier: item.difficultyTier || 'base',
@@ -1167,7 +1377,8 @@ function enrichExerciseDB(db) {
   };
 }
 
-const EXERCISE_DB_V5 = enrichExerciseDB(EXERCISE_DB);
+const EXERCISE_DB_EXPANDED = expandExerciseCatalogLarge(EXERCISE_DB);
+const EXERCISE_DB_V5 = enrichExerciseDB(EXERCISE_DB_EXPANDED);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // INITIAL STATE
@@ -1420,7 +1631,8 @@ function pickRandom(arr) {
 
 function enrichPrescribedExercise(ex, state, intensityTag) {
   const volumeScale = intensityTag === 'low' ? 0.75 : intensityTag === 'high' ? 1.1 : 1;
-  const nextHint = state.progression.exercises[ex.id]?.nextPrescription || null;
+  const progressionKey = ex.progressionTrackId || ex.id;
+  const nextHint = state.progression.exercises[progressionKey]?.nextPrescription || state.progression.exercises[ex.id]?.nextPrescription || null;
   const prescribedSets = ex.sets ? clamp(Math.round(ex.sets * volumeScale), 1, 10) : null;
 
   return {
@@ -1431,74 +1643,395 @@ function enrichPrescribedExercise(ex, state, intensityTag) {
   };
 }
 
+function getSelectionConfig(state) {
+  const cfg = state.programConfig || {};
+  return {
+    strategy: cfg.exerciseSelectionStrategy || 'progress_history_v2',
+    lookbackDays: clamp(toNum(cfg.historyLookbackDays, 30), 7, 60),
+    hardNoRepeatDays: clamp(toNum(cfg.hardNoRepeatDays, 2), 0, 7),
+    gymAnchorCount: clamp(toNum(cfg.gymAnchorCount, 2), 0, 3),
+    seedMode: cfg.dailyVariationSeedMode || 'date_type',
+  };
+}
+
+function stableHash(input) {
+  let h = 2166136261;
+  const str = String(input || '');
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+function seededTieBreak(seed, key) {
+  return (stableHash(`${seed}:${key}`) % 1000) / 1000;
+}
+
+function getProgressionKey(exOrResult) {
+  return exOrResult?.progressionTrackId || exOrResult?.progressionKey || exOrResult?.exerciseId || exOrResult?.id || '';
+}
+
+function buildRecentUsage(state, lookbackDays) {
+  const nowMs = Date.now();
+  const cutoffMs = nowMs - (lookbackDays * 24 * 60 * 60 * 1000);
+  const usage = {
+    nowMs,
+    lastByExercise: new Map(),
+    lastByTrack: new Map(),
+    countByTrack: new Map(),
+    countByFamily: new Map(),
+  };
+
+  for (const log of state.sessionLogs || []) {
+    const ts = Date.parse(log.completedAt || log.timestamp || '');
+    if (!Number.isFinite(ts) || ts < cutoffMs) continue;
+    for (const ex of log.exercises || []) {
+      if (!ex?.id) continue;
+      const track = getProgressionKey(ex) || ex.id;
+      const family = ex.movementFamily || ex.pattern || 'general';
+      const prevEx = usage.lastByExercise.get(ex.id) || 0;
+      const prevTrack = usage.lastByTrack.get(track) || 0;
+      usage.lastByExercise.set(ex.id, Math.max(prevEx, ts));
+      usage.lastByTrack.set(track, Math.max(prevTrack, ts));
+      usage.countByTrack.set(track, (usage.countByTrack.get(track) || 0) + 1);
+      usage.countByFamily.set(family, (usage.countByFamily.get(family) || 0) + 1);
+    }
+  }
+
+  return usage;
+}
+
+function getDaysSince(timestampMs, nowMs) {
+  if (!Number.isFinite(timestampMs)) return Number.POSITIVE_INFINITY;
+  return (nowMs - timestampMs) / (24 * 60 * 60 * 1000);
+}
+
+function isExerciseSelectable(ex, state, blockedPatterns) {
+  if (!ex) return false;
+  if (blockedPatterns.includes(ex.pattern)) return false;
+  const unavailable = new Set(state.constraints?.unavailableEquipment || []);
+  if (unavailable.size > 0 && (ex.equipmentTags || []).some(tag => unavailable.has(tag))) return false;
+  return true;
+}
+
+function scoreProgressionNeed(ex, state, sessionType, usage) {
+  const progressionKey = getProgressionKey(ex) || ex.id;
+  const p = state.progression.exercises[progressionKey] || state.progression.exercises[ex.id] || null;
+  let score = 0;
+  const reasons = [];
+  const isStalled = (state.progression.stalledItems || []).some(item =>
+    item.type === sessionType && (item.id === progressionKey || item.id === ex.id)
+  );
+  if (isStalled) {
+    score += 24;
+    reasons.push('stalled item');
+  }
+  if (!p) {
+    score += 10;
+    reasons.push('new track');
+  } else {
+    if (p.lastOutcome === 'regress') {
+      score += 18;
+      reasons.push('recent regress');
+    } else if (p.lastOutcome === 'hold') {
+      score += 10;
+      reasons.push('consolidate');
+    } else if (p.lastOutcome === 'advance') {
+      score += 6;
+      reasons.push('continue progression');
+    }
+    const lastTrackTs = usage.lastByTrack.get(progressionKey);
+    const days = getDaysSince(lastTrackTs, usage.nowMs);
+    if (days > 8) {
+      score += 8;
+      reasons.push('not trained recently');
+    }
+  }
+  return { score, reasons };
+}
+
+function scoreExerciseCandidate(ex, state, sessionType, selected, usage, selectionConfig, seed, pass, intensityTag) {
+  const progressionKey = getProgressionKey(ex) || ex.id;
+  const family = ex.movementFamily || ex.pattern || 'general';
+  const lastTs = Math.max(
+    usage.lastByExercise.get(ex.id) || 0,
+    usage.lastByTrack.get(progressionKey) || 0
+  );
+  const daysSince = getDaysSince(lastTs, usage.nowMs);
+  const hardBlocked = Number.isFinite(daysSince) && daysSince <= pass.hardNoRepeatDays;
+
+  let score = 0;
+  const rationale = [];
+
+  if (hardBlocked) {
+    score -= 140;
+    rationale.push(`used ${daysSince.toFixed(1)}d ago`);
+  } else if (Number.isFinite(daysSince) && daysSince <= pass.lookbackDays) {
+    score -= 40;
+    rationale.push('recently used');
+  } else {
+    score += 10;
+    rationale.push('fresh pick');
+  }
+
+  const progression = scoreProgressionNeed(ex, state, sessionType, usage);
+  score += progression.score;
+  if (progression.reasons.length) rationale.push(...progression.reasons);
+
+  const familyCount = selected.filter(item => (item.movementFamily || item.pattern || 'general') === family).length;
+  if (familyCount === 0) {
+    score += 8;
+  } else {
+    score -= familyCount * 10;
+    rationale.push('family already covered');
+  }
+
+  const duplicateTrackCount = selected.filter(item => getProgressionKey(item) === progressionKey).length;
+  if (duplicateTrackCount > 0) {
+    score -= 25;
+    rationale.push('track already selected');
+  }
+
+  if (selectionConfig.strategy === 'progress_history_v2') {
+    if (intensityTag === 'low' && ex.difficultyTier === 'advanced') score -= 6;
+    if (intensityTag === 'high' && toNum(ex.rpe ?? ex.targetRPE, 6) >= 8) score += 4;
+  }
+
+  score += seededTieBreak(seed, ex.id) * 2;
+  return { ex, score, hardBlocked, rationale };
+}
+
+function pickRankedExercises(candidates, desiredCount, state, sessionType, usage, selectionConfig, seed, intensityTag = 'moderate') {
+  const selected = [];
+  const rationaleByExerciseId = {};
+  const passes = [
+    { hardNoRepeatDays: selectionConfig.hardNoRepeatDays, lookbackDays: selectionConfig.lookbackDays },
+    { hardNoRepeatDays: 0, lookbackDays: selectionConfig.lookbackDays },
+    { hardNoRepeatDays: 0, lookbackDays: Math.max(0, Math.floor(selectionConfig.lookbackDays / 2)) },
+    { hardNoRepeatDays: 0, lookbackDays: 0 },
+  ];
+
+  for (const pass of passes) {
+    while (selected.length < desiredCount) {
+      const scored = candidates
+        .filter(ex => !selected.some(s => s.id === ex.id))
+        .map(ex => scoreExerciseCandidate(ex, state, sessionType, selected, usage, selectionConfig, seed, pass, intensityTag))
+        .sort((a, b) => b.score - a.score);
+      if (!scored.length) break;
+
+      let picked = scored[0];
+      if (picked.hardBlocked) {
+        const fallback = scored.find(item => !item.hardBlocked);
+        if (fallback) picked = fallback;
+      }
+      selected.push(picked.ex);
+      rationaleByExerciseId[picked.ex.id] = picked.rationale.join(' · ');
+    }
+    if (selected.length >= desiredCount) break;
+  }
+
+  return { selected: selected.slice(0, desiredCount), rationaleByExerciseId };
+}
+
+function pickGymAnchors(candidates, count, state, sessionType, usage, seed) {
+  if (count <= 0 || !candidates.length) return [];
+  const ranked = candidates
+    .map(ex => {
+      const progression = scoreProgressionNeed(ex, state, sessionType, usage).score;
+      const family = ex.movementFamily || ex.pattern || 'general';
+      const lastTs = Math.max(usage.lastByExercise.get(ex.id) || 0, usage.lastByTrack.get(getProgressionKey(ex)) || 0);
+      const daysSince = getDaysSince(lastTs, usage.nowMs);
+      const freshness = Number.isFinite(daysSince) ? Math.min(daysSince, 20) : 12;
+      const score = progression + freshness + (family === 'squat' || family === 'hinge' ? 6 : 0) + seededTieBreak(seed, `anchor:${ex.id}`);
+      return { ex, family, score };
+    })
+    .sort((a, b) => b.score - a.score);
+
+  const anchors = [];
+  const usedFamilies = new Set();
+  for (const item of ranked) {
+    if (anchors.length >= count) break;
+    if (usedFamilies.has(item.family)) continue;
+    anchors.push(item.ex);
+    usedFamilies.add(item.family);
+  }
+  for (const item of ranked) {
+    if (anchors.length >= count) break;
+    if (anchors.some(a => a.id === item.ex.id)) continue;
+    anchors.push(item.ex);
+  }
+  return anchors.slice(0, count);
+}
+
+function buildSkillBandCandidates(state, blockedPatterns) {
+  const skills = state.domains.calisthenics.skills || {};
+  const candidates = [];
+  for (const [skill, data] of Object.entries(skills)) {
+    const db = EXERCISE_DB_V5.calisthenics[skill] || [];
+    const level = clamp(toNum(data.level, 1), 1, 12);
+    let pool = db.filter(item => Math.abs(toNum(item.level, level) - level) <= 1);
+    if (!pool.length) pool = db.filter(item => toNum(item.level, 1) === level);
+    if (!pool.length) pool = db;
+    if (skill === 'handstand' && blockedPatterns.includes('inversion')) {
+      pool = db.filter(item => toNum(item.level, 1) <= 2);
+    }
+    if (skill === 'pullUp' && blockedPatterns.includes('vertical-pull')) {
+      pool = db.filter(item => toNum(item.level, 1) <= 2);
+    }
+    for (const ex of pool) {
+      candidates.push({ ...ex, skillTag: skill });
+    }
+  }
+  return candidates;
+}
+
 function generateWorkout(type, state, maSubtype, intensityTag = 'moderate', timeMinutes = 60, sessionVariant = null) {
   const timeBase = timeMinutes <= 30 ? 2 : timeMinutes <= 45 ? 3 : timeMinutes <= 60 ? 5 : timeMinutes <= 75 ? 6 : 7;
   const coachStyle = state.programConfig?.coachStyle || 'adaptive-flexible';
   const styleAdjust = coachStyle === 'light-touch' ? -1 : 0;
   const capExercises = Math.max(2, timeBase + styleAdjust);
-
-  // Strict: sort alphabetically instead of random for deterministic sessions
-  const sortFn = coachStyle === 'strict'
-    ? (a, b) => a.name.localeCompare(b.name)
-    : () => Math.random() - 0.5;
-
+  const selectionConfig = getSelectionConfig(state);
+  const seed = `${new Date().toISOString().slice(0, 10)}:${type}:${state.profile.sessionCount}:${selectionConfig.seedMode}`;
   const blockedPatterns = getBlockedPatterns(state.constraints);
-  const isSafe = (ex) => !blockedPatterns.includes(ex.pattern);
-
+  const usage = buildRecentUsage(state, selectionConfig.lookbackDays);
   let exercises = [];
+  let selectionMeta = {
+    algorithmVersion: 'progress_history_v2',
+    anchorIds: [],
+    lookbackDays: selectionConfig.lookbackDays,
+    rationaleByExerciseId: {},
+  };
 
   if (type === 'gym') {
-    const safeLower = EXERCISE_DB_V5.strength.legs.filter(isSafe);
-    const safeUpper = EXERCISE_DB_V5.strength.upper.filter(isSafe);
-    const safeFull = EXERCISE_DB_V5.strength.full.filter(isSafe);
+    const safeLower = EXERCISE_DB_V5.strength.legs.filter(ex => isExerciseSelectable(ex, state, blockedPatterns));
+    const safeUpper = EXERCISE_DB_V5.strength.upper.filter(ex => isExerciseSelectable(ex, state, blockedPatterns));
+    const safeFull = EXERCISE_DB_V5.strength.full.filter(ex => isExerciseSelectable(ex, state, blockedPatterns));
     const lowerPool = safeLower.length ? safeLower : safeUpper;
     const upperPool = safeUpper.length ? safeUpper : safeFull;
-
-    // Split slots: ~55% barbell, ~45% calisthenics skills
     const barbellSlots = Math.ceil(capExercises * 0.55);
     const skillSlots = capExercises - barbellSlots;
-    const legs = [...lowerPool].sort(sortFn).slice(0, Math.max(1, Math.ceil(barbellSlots / 2)));
-    const upper = [...upperPool].sort(sortFn).slice(0, 1);
-    const full = safeFull.length ? [[...safeFull].sort(sortFn)[0]] : [];
-    const barbellExs = [...legs, ...upper, ...full].slice(0, barbellSlots);
+    const barbellCandidates = [...lowerPool, ...upperPool, ...safeFull];
+    const skillCandidates = buildSkillBandCandidates(state, blockedPatterns).filter(ex => isExerciseSelectable(ex, state, blockedPatterns));
 
-    // Pick calisthenics skill exercises at current levels
-    const skills = state.domains.calisthenics.skills;
-    const skillExs = Object.entries(skills)
-      .map(([skill, data]) => {
-        const db = EXERCISE_DB_V5.calisthenics[skill];
-        if (blockedPatterns.includes('inversion') && skill === 'handstand') return db.find(e => e.level <= 2) || db[0];
-        if (blockedPatterns.includes('vertical-pull') && skill === 'pullUp') return db.find(e => e.level <= 2) || db[0];
-        return db.find(e => e.level === data.level) || db[0];
-      })
-      .sort(sortFn)
-      .slice(0, skillSlots);
-
-    exercises = [...barbellExs, ...skillExs];
+    const anchors = pickGymAnchors(barbellCandidates, selectionConfig.gymAnchorCount, state, type, usage, seed);
+    const anchorIds = anchors.map(ex => ex.id);
+    const remainingBarbellPool = barbellCandidates.filter(ex => !anchorIds.includes(ex.id));
+    const pickedBarbell = pickRankedExercises(
+      remainingBarbellPool,
+      Math.max(0, barbellSlots - anchors.length),
+      state,
+      type,
+      usage,
+      selectionConfig,
+      `${seed}:barbell`,
+      intensityTag
+    );
+    const pickedSkills = pickRankedExercises(
+      skillCandidates,
+      Math.max(0, skillSlots),
+      state,
+      type,
+      usage,
+      selectionConfig,
+      `${seed}:skills`,
+      intensityTag
+    );
+    exercises = [...anchors, ...pickedBarbell.selected, ...pickedSkills.selected].slice(0, capExercises);
+    selectionMeta = {
+      ...selectionMeta,
+      anchorIds,
+      rationaleByExerciseId: {
+        ...Object.fromEntries(anchors.map(ex => [ex.id, 'Anchor: progression continuity'])),
+        ...pickedBarbell.rationaleByExerciseId,
+        ...pickedSkills.rationaleByExerciseId,
+      },
+    };
   } else if (type === 'martialArts') {
     const db = maSubtype === 'striking' ? EXERCISE_DB_V5.striking : EXERCISE_DB_V5.grappling;
-    const safe = blockedPatterns.includes('upper') && maSubtype === 'striking'
-      ? db.filter(e => !['strike'].includes(e.visual))
-      : db;
-    exercises = [...(safe.length ? safe : db)].sort(sortFn).slice(0, capExercises - 1);
+    const safe = db.filter(ex => isExerciseSelectable(ex, state, blockedPatterns));
+    const picked = pickRankedExercises(
+      safe.length ? safe : db,
+      Math.max(1, capExercises - 1),
+      state,
+      type,
+      usage,
+      selectionConfig,
+      `${seed}:${maSubtype || 'ma'}`,
+      intensityTag
+    );
+    exercises = picked.selected;
+    selectionMeta.rationaleByExerciseId = picked.rationaleByExerciseId;
   } else if (type === 'running') {
-    const safeRun = blockedPatterns.includes('aerobic')
-      ? EXERCISE_DB_V5.running.filter(e => e.targetRPE <= 4) // only recovery walk
-      : EXERCISE_DB_V5.running;
-    exercises = [pickRandom(safeRun.length ? safeRun : EXERCISE_DB_V5.running)];
+    const safeRun = EXERCISE_DB_V5.running
+      .filter(ex => isExerciseSelectable(ex, state, blockedPatterns))
+      .filter(ex => !blockedPatterns.includes('aerobic') || toNum(ex.targetRPE, 6) <= 4);
+    const picked = pickRankedExercises(
+      safeRun.length ? safeRun : EXERCISE_DB_V5.running,
+      1,
+      state,
+      type,
+      usage,
+      selectionConfig,
+      `${seed}:running`,
+      intensityTag
+    );
+    exercises = picked.selected;
+    selectionMeta.rationaleByExerciseId = picked.rationaleByExerciseId;
   } else if (type === 'mobility') {
     if (sessionVariant === 'micro-break') {
       const requestedMinutes = Number(timeMinutes);
       const targetMinutes = [2, 3, 5].includes(requestedMinutes) ? requestedMinutes : 3;
       const exactPool = MICRO_BREAK_MOBILITY_FLOWS.filter(flow => flow.microFlow?.minutes === targetMinutes);
       const fallbackPool = exactPool.length ? exactPool : MICRO_BREAK_MOBILITY_FLOWS.filter(flow => flow.microFlow?.minutes === 3);
-      exercises = fallbackPool.length ? [[...fallbackPool].sort(sortFn)[0]] : [];
+      const picked = pickRankedExercises(
+        fallbackPool,
+        1,
+        state,
+        type,
+        usage,
+        selectionConfig,
+        `${seed}:micro:${targetMinutes}`,
+        intensityTag
+      );
+      exercises = picked.selected;
+      selectionMeta.rationaleByExerciseId = picked.rationaleByExerciseId;
     } else {
-      exercises = [...EXERCISE_DB_V5.mobility].sort(sortFn).slice(0, Math.max(1, capExercises - 2));
+      const safeMobility = EXERCISE_DB_V5.mobility.filter(ex => isExerciseSelectable(ex, state, blockedPatterns));
+      const picked = pickRankedExercises(
+        safeMobility.length ? safeMobility : EXERCISE_DB_V5.mobility,
+        Math.max(1, capExercises - 2),
+        state,
+        type,
+        usage,
+        selectionConfig,
+        `${seed}:mobility`,
+        intensityTag
+      );
+      exercises = picked.selected;
+      selectionMeta.rationaleByExerciseId = picked.rationaleByExerciseId;
     }
   }
 
-  return exercises.filter(Boolean).map(ex => enrichPrescribedExercise(ex, state, intensityTag));
+  const normalized = exercises.filter(Boolean).map(ex => enrichPrescribedExercise(ex, state, intensityTag));
+  if (!normalized.length) {
+    const fallback = type === 'running'
+      ? [EXERCISE_DB_V5.running[0]]
+      : type === 'martialArts'
+        ? [(maSubtype === 'striking' ? EXERCISE_DB_V5.striking : EXERCISE_DB_V5.grappling)[0]]
+        : type === 'mobility'
+          ? [EXERCISE_DB_V5.mobility[0]]
+          : [EXERCISE_DB_V5.strength.legs[0], EXERCISE_DB_V5.strength.upper[0]];
+    return {
+      exercises: fallback.filter(Boolean).map(ex => enrichPrescribedExercise(ex, state, intensityTag)),
+      selectionMeta: {
+        ...selectionMeta,
+        rationaleByExerciseId: { ...(selectionMeta.rationaleByExerciseId || {}), fallback: 'Fallback due to pool constraints' },
+      },
+    };
+  }
+
+  return { exercises: normalized, selectionMeta };
 }
 
 function computeAthleteModelFromState(state) {
@@ -1615,6 +2148,8 @@ function buildRollingPlanForState(state) {
     weeklySummaryCooldownUntil: state.planState?.weeklySummaryCooldownUntil || null,
     weeklySummaryLastAttemptAt: state.planState?.weeklySummaryLastAttemptAt || null,
     weeklySummaryLastError: state.planState?.weeklySummaryLastError || null,
+    exerciseHistoryIndex: state.planState?.exerciseHistoryIndex || {},
+    lastGeneratedAtByType: state.planState?.lastGeneratedAtByType || {},
     timeFit,
   };
 }
@@ -1625,9 +2160,26 @@ function getPriorityTypes(balance, state) {
   return ranked.map(r => ({ ...r, label: FREQUENCY_TARGETS[r.type].label }));
 }
 
+function appendExerciseHistoryIndex(planState, sessionType, maSubtype, exercises, completedAt) {
+  const key = sessionType === 'martialArts' ? `martialArts:${maSubtype || 'mixed'}` : sessionType;
+  const existing = (planState?.exerciseHistoryIndex && Array.isArray(planState.exerciseHistoryIndex[key]))
+    ? planState.exerciseHistoryIndex[key]
+    : [];
+  const additions = (exercises || []).map(ex => ({
+    exerciseId: ex.id,
+    progressionTrackId: getProgressionKey(ex) || ex.id,
+    completedAt,
+  }));
+  return {
+    ...(planState?.exerciseHistoryIndex || {}),
+    [key]: [...additions, ...existing].slice(0, 240),
+  };
+}
+
 function createExerciseResult(ex) {
   return {
     exerciseId: ex.id,
+    progressionKey: getProgressionKey(ex) || ex.id,
     prescribed: {
       sets: ex.sets || null,
       reps: ex.reps || '',
@@ -1653,7 +2205,8 @@ function createSessionFromType(state, type, source = 'manual', timeMinutes = nul
   const readinessBand = state.readiness.band || 'moderate';
   const intensityTag = readinessBand === 'low' ? 'low' : readinessBand === 'high' ? 'high' : 'moderate';
   const actualTimeMinutes = timeMinutes || state.constraints.timeOverrideMinutes || state.programConfig.defaultSessionMinutes || 60;
-  const exercises = generateWorkout(type, state, maSubtype, intensityTag, actualTimeMinutes, sessionVariant);
+  const generated = generateWorkout(type, state, maSubtype, intensityTag, actualTimeMinutes, sessionVariant);
+  const exercises = (generated?.exercises || generated || []).filter(Boolean);
   const exerciseResults = exercises.map(createExerciseResult);
   const blockRPE = { accumulation:7, intensification:8, realization:9, deload:5 };
   const baseTarget = blockRPE[state.profile.currentBlock] || 7;
@@ -1673,6 +2226,7 @@ function createSessionFromType(state, type, source = 'manual', timeMinutes = nul
       reasonText: reasonOverride || state.planState.reasonText,
       source,
       timeFit: actualTimeMinutes,
+      selectionMeta: generated?.selectionMeta || null,
     },
     readinessSnapshot: {
       score: state.readiness.score,
@@ -1716,12 +2270,21 @@ function updateProgressionRecords(state, sessionType, exerciseResults, sessionRP
   let advanced = 0;
   let regressed = 0;
   let held = 0;
+  const nowIso = new Date().toISOString();
 
   for (const r of exerciseResults) {
     const outcome = evaluateExerciseOutcome(r);
-    const prev = progression.exercises[r.exerciseId] || { exposures: 0, successes: 0, failures: 0, nextPrescription: null, history: [] };
+    const progressionKey = getProgressionKey(r) || r.exerciseId;
+    const legacyPrev = progression.exercises[r.exerciseId];
+    const keyPrev = progression.exercises[progressionKey];
+    const prev = keyPrev || legacyPrev || { exposures: 0, successes: 0, failures: 0, nextPrescription: null, history: [], selectionCount: 0 };
+    if (progressionKey !== r.exerciseId && legacyPrev && !keyPrev) {
+      delete progression.exercises[r.exerciseId];
+    }
     const historyEntry = {
-      date: new Date().toISOString().slice(0, 10),
+      date: nowIso.slice(0, 10),
+      exerciseId: r.exerciseId,
+      progressionKey,
       topMetric: r.performed?.topMetric || '',
       effortRPE: r.performed?.effortRPE || 0,
       outcome,
@@ -1730,7 +2293,9 @@ function updateProgressionRecords(state, sessionType, exerciseResults, sessionRP
       ...prev,
       exposures: prev.exposures + 1,
       lastOutcome: outcome,
-      lastTrainedAt: new Date().toISOString(),
+      lastTrainedAt: nowIso,
+      lastSelectedAt: nowIso,
+      selectionCount: toNum(prev.selectionCount, 0) + 1,
       history: [...(prev.history || []).slice(-19), historyEntry],
     };
     if (outcome === 'advance') {
@@ -1741,15 +2306,15 @@ function updateProgressionRecords(state, sessionType, exerciseResults, sessionRP
       next.failures = prev.failures + 1;
       next.nextPrescription = { loadHint: '-5% load or reduce volume', note: 'Recovery/technique before loading' };
       regressed += 1;
-      const alreadyStalled = progression.stalledItems.some(item => item.id === r.exerciseId);
+      const alreadyStalled = progression.stalledItems.some(item => item.id === progressionKey || item.id === r.exerciseId);
       if (!alreadyStalled) {
-        progression.stalledItems.push({ id: r.exerciseId, type: sessionType, reason: r.performed.pain ? 'pain flag' : 'performance miss' });
+        progression.stalledItems.push({ id: progressionKey, type: sessionType, reason: r.performed.pain ? 'pain flag' : 'performance miss' });
       }
     } else {
       next.nextPrescription = { loadHint: 'Repeat previous target', note: 'Hold and consolidate' };
       held += 1;
     }
-    progression.exercises[r.exerciseId] = next;
+    progression.exercises[progressionKey] = next;
   }
 
   progression.highRPEStreak = sessionRPE >= 8 ? (state.progression.highRPEStreak || 0) + 1 : 0;
@@ -1795,6 +2360,13 @@ function completeSessionInternal(state, payload = {}) {
     completedAsModified: completeAsModified,
     completedAt: new Date().toISOString(),
   };
+  const updatedExerciseHistoryIndex = appendExerciseHistoryIndex(
+    state.planState,
+    sessionType,
+    state.currentMASubtype,
+    newLog.exercises || [],
+    newLog.completedAt
+  );
 
   const domainKeys = getDomainsFromType(sessionType, state.currentMASubtype);
   const newDomains = { ...state.domains };
@@ -1842,6 +2414,10 @@ function completeSessionInternal(state, payload = {}) {
     domains: newDomains,
     progression,
     muscleRecovery: newMuscleRecovery,
+    planState: {
+      ...state.planState,
+      exerciseHistoryIndex: updatedExerciseHistoryIndex,
+    },
     view: 'home',
   };
 
@@ -1866,15 +2442,43 @@ function completeSessionInternal(state, payload = {}) {
   return { ...nextState, athleteModel, planState: { ...planState, progressionPrompts }, decisionLog };
 }
 
+function getFallbackDomainForLog(log) {
+  if (log?.type === 'martialArts') return log?.maSubtype === 'striking' ? 'striking' : 'grappling';
+  if (log?.type === 'running') return 'running';
+  if (log?.type === 'mobility') return 'mobility';
+  return 'strength';
+}
+
 function migrateSessionLog(log, idx) {
   const id = log.id || `legacy_${idx}_${Date.parse(log.timestamp || new Date().toISOString())}`;
-  const exercises = Array.isArray(log.exercises) ? log.exercises : [];
-  const legacyPrescription = log.prescription || { sessionType: log.type, intensityTag: 'moderate', targetRPE: log.rpe || 7, source: 'legacy', reasonText: 'Imported legacy session', timeFit: 60 };
-  const normalizedPrescription = { sessionVariant: null, ...legacyPrescription };
+  const fallbackDomain = getFallbackDomainForLog(log);
+  const exercises = (Array.isArray(log.exercises) ? log.exercises : [])
+    .map((ex, exIdx) => enrichExercise(ex, ex?.domain || fallbackDomain, ex?.group || fallbackDomain, exIdx));
+  const legacyPrescription = log.prescription || {
+    sessionType: log.type,
+    intensityTag: 'moderate',
+    targetRPE: log.rpe || 7,
+    source: 'legacy',
+    reasonText: 'Imported legacy session',
+    timeFit: 60,
+  };
+  const normalizedPrescription = { sessionVariant: null, selectionMeta: null, ...legacyPrescription };
+  const exerciseMap = new Map();
+  for (const ex of exercises) {
+    exerciseMap.set(ex.id, ex);
+    exerciseMap.set(slugify(ex.name), ex);
+  }
   const exerciseResults = Array.isArray(log.exerciseResults) && log.exerciseResults.length
-    ? log.exerciseResults
+    ? log.exerciseResults.map(r => {
+        const linked = exerciseMap.get(r.exerciseId) || exerciseMap.get(slugify(r.exerciseId || ''));
+        return {
+          ...r,
+          progressionKey: r.progressionKey || getProgressionKey(linked) || r.exerciseId,
+        };
+      })
     : exercises.map(ex => ({
         exerciseId: ex.id || slugify(ex.name),
+        progressionKey: getProgressionKey(ex) || ex.id || slugify(ex.name),
         prescribed: { sets: ex.sets || null, reps: ex.reps || '', duration: ex.duration || '', distance: ex.distance || '', targetRPE: ex.rpe || ex.targetRPE || null },
         performed: { setsCompleted: ex.sets || 0, topMetric: '', effortRPE: log.rpe || 6, pain: false },
         outcome: 'hold',
@@ -1934,7 +2538,20 @@ function migrateState(raw) {
         endpoint: buildGeminiEndpoint(normalizedModel),
       };
     })(),
-    progression: { ...base.progression, ...(raw.progression || {}), exercises: { ...(base.progression.exercises), ...(raw.progression?.exercises || {}) } },
+    progression: {
+      ...base.progression,
+      ...(raw.progression || {}),
+      exercises: Object.fromEntries(
+        Object.entries({ ...(base.progression.exercises), ...(raw.progression?.exercises || {}) }).map(([key, value]) => ([
+          key,
+          {
+            selectionCount: 0,
+            lastSelectedAt: null,
+            ...(value || {}),
+          },
+        ]))
+      ),
+    },
     athleteModel: { ...base.athleteModel, ...(raw.athleteModel || {}), domainScores: { ...base.athleteModel.domainScores, ...(raw.athleteModel?.domainScores || {}) } },
     planState: {
       ...base.planState,
@@ -1945,6 +2562,8 @@ function migrateState(raw) {
       weeklySummaryCooldownUntil: raw.planState?.weeklySummaryCooldownUntil || null,
       weeklySummaryLastAttemptAt: raw.planState?.weeklySummaryLastAttemptAt || null,
       weeklySummaryLastError: raw.planState?.weeklySummaryLastError || null,
+      exerciseHistoryIndex: raw.planState?.exerciseHistoryIndex || {},
+      lastGeneratedAtByType: raw.planState?.lastGeneratedAtByType || {},
     },
     domains: {
       ...base.domains,
@@ -2123,6 +2742,13 @@ function appReducer(state, action) {
         currentSessionType: type,
         currentMASubtype: activeSession.maSubtype,
         activeSession,
+        planState: {
+          ...state.planState,
+          lastGeneratedAtByType: {
+            ...(state.planState?.lastGeneratedAtByType || {}),
+            [type === 'martialArts' ? `martialArts:${activeSession.maSubtype || 'mixed'}` : type]: activeSession.timestamp,
+          },
+        },
         aiConfig: { ...state.aiConfig, coachingNotes: null, coachingLoading: false, coachingError: null, coachingWarning: null },
       };
     }
@@ -3372,6 +3998,7 @@ function TrainView({ state, dispatch }) {
       <div className="space-y-3">
         {state.activeSession.exercises.map((ex, idx) => {
           const coachNotes = state.aiConfig.coachingNotes?.exercises || {};
+          const selectionRationale = state.activeSession.prescription?.selectionMeta?.rationaleByExerciseId?.[ex.id] || null;
           return (
             <ExerciseCard
               key={ex.id || idx}
@@ -3380,6 +4007,7 @@ function TrainView({ state, dispatch }) {
               sessionType={state.currentSessionType}
               result={resultsById[ex.id]}
               coachNote={coachNotes[ex.name] || null}
+              selectionRationale={selectionRationale}
               onResultChange={(patch) => dispatch({ type: 'LOG_EXERCISE_RESULT', payload: { exerciseId: ex.id, patch } })}
               onSwap={(oldId, newEx) => dispatch({ type: 'SWAP_SESSION_EXERCISE', payload: { oldId, newEx } })}
             />
@@ -3392,7 +4020,7 @@ function TrainView({ state, dispatch }) {
   );
 }
 
-function ExerciseCard({ ex, idx, result, onResultChange, sessionType, onSwap, coachNote }) {
+function ExerciseCard({ ex, idx, result, onResultChange, sessionType, onSwap, coachNote, selectionRationale }) {
   const variant = ex.visual || 'athletic';
   const [showSwap, setShowSwap] = useState(false);
   const alternatives = useMemo(() => getAlternatives(ex, sessionType), [ex, sessionType]);
@@ -3459,6 +4087,12 @@ function ExerciseCard({ ex, idx, result, onResultChange, sessionType, onSwap, co
         )}
         {ex.focus && (
           <div className="text-neutral-400 font-mono text-xs"><span className="text-neutral-600">FOCUS: </span>{ex.focus}</div>
+        )}
+        {selectionRationale && (
+          <div className="text-cyan-400 font-mono text-xs">
+            <span className="text-cyan-600">WHY TODAY: </span>
+            {selectionRationale}
+          </div>
         )}
         {Array.isArray(ex.microFlow?.steps) && ex.microFlow.steps.length > 0 && (
           <div className="border border-neutral-800 bg-neutral-900 p-2 space-y-1 mt-1">
