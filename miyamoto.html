@@ -4196,9 +4196,21 @@ function App() {
 
   <script>
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('./sw.js').catch((err) => {
-        console.error('Service worker registration failed:', err);
-      });
+      let reloadedForNewController = false;
+      navigator.serviceWorker.register('./sw.js')
+        .then((registration) => {
+          registration.update().catch((err) => {
+            console.warn('Service worker update check failed:', err);
+          });
+          navigator.serviceWorker.addEventListener('controllerchange', () => {
+            if (reloadedForNewController) return;
+            reloadedForNewController = true;
+            window.location.reload();
+          });
+        })
+        .catch((err) => {
+          console.error('Service worker registration failed:', err);
+        });
     }
   </script>
 </body>
