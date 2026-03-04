@@ -221,6 +221,10 @@ function createProgramConfig() {
     coachStyle: 'adaptive-flexible',
     defaultSessionMinutes: 60,
     adaptationAggressiveness: 'moderate',
+    planningMode: 'ai_primary_guardrailed',
+    aiInterviewMode: 'daily_required',
+    aiPlanHorizonDays: 7,
+    slotReassignPolicy: 'bounded_reassign',
     priorityProfile: 'balanced_complete_athlete',
     exerciseSelectionStrategy: 'progress_history_v2',
     historyLookbackDays: 30,
@@ -367,6 +371,9 @@ const GEMINI_ALLOWED_MODELS = ['gemini-3-flash-preview', 'gemini-2.5-flash', 'ge
 const GEMINI_DEFAULT_MODEL = 'gemini-3-flash-preview';
 const GEMINI_RETRY_DELAYS_MS = [1500, 3000, 6000];
 const WEEKLY_SUMMARY_COOLDOWN_MS = 12 * 60 * 60 * 1000;
+const AI_PLAN_FRESHNESS_HOURS = 16;
+const AI_PLANNER_ALLOWED_TYPES = new Set(SESSION_TYPES);
+const AI_PRIMARY_PLAN_SOURCES = new Set(['ai', 'ai_guardrail_corrected']);
 
 function normalizeGeminiModel(model) {
   return GEMINI_ALLOWED_MODELS.includes(model) ? model : GEMINI_DEFAULT_MODEL;
@@ -998,9 +1005,12 @@ async function callGeminiWithRetry({ apiKey, endpoint, body, requestType = 'Gemi
 function createAIConfig() {
   return {
     enabled: false,
+    planningEnabled: true,
     apiKey: '',
     model: GEMINI_DEFAULT_MODEL,
+    planningModel: GEMINI_DEFAULT_MODEL,
     endpoint: buildGeminiEndpoint(GEMINI_DEFAULT_MODEL),
+    planningLastQuality: null,
     coachingNotes: null,
     coachingLoading: false,
     coachingError: null,
@@ -1037,6 +1047,12 @@ function createPlanState() {
     skipDebtScore: 0,
     consecutiveSkippedSlots: 0,
     lastScheduleReplanAt: null,
+    aiPlan: null,
+    aiPlanStatus: 'idle',
+    aiInterview: null,
+    aiPlanLastError: null,
+    aiPlanSource: 'fallback_engine',
+    aiPlanNeedsRefresh: true,
     martialArtsNextPhase: 'technical',
     martialArtsNextRationale: 'Rebuild technical consistency first.',
   };
@@ -1584,6 +1600,12 @@ function createInitialState() {
       },
       primaryGoal: 'complete_athlete',
       goals: [],
+      primaryGoalType: 'performance',
+      secondaryGoals: [],
+      timelineWeeks: 12,
+      priorityDomains: ['strength', 'conditioning', 'mobility'],
+      goalNotes: '',
+      mustAvoidTags: [],
     },
     programConfig: createProgramConfig(),
     athleteModel: createAthleteModel(),
@@ -1870,10 +1892,11 @@ function applySkipDebtAndReplan(state, ranked) {
   const now = new Date();
   const cfg = state.programConfig || {};
   const scheduleMode = cfg.scheduleMode || 'weekday_fixed';
+  const aiPlanActive = AI_PRIMARY_PLAN_SOURCES.has(state.planState?.aiPlanSource) && !!state.planState?.aiPlan;
   const existing = state.planState?.scheduledSlotsByDate || {};
   const scheduledSlotsByDate = { ...existing };
 
-  if (scheduleMode === 'weekday_fixed' && isWeekdayDate(now)) {
+  if (!aiPlanActive && scheduleMode === 'weekday_fixed' && isWeekdayDate(now)) {
     const dateKey = getLocalDateKey(now);
     const dayExisting = scheduledSlotsByDate[dateKey] || {};
     const primaryType = ranked[0]?.type || 'gym';
@@ -1897,6 +1920,493 @@ function applySkipDebtAndReplan(state, ranked) {
     lastScheduleReplanAt: new Date().toISOString(),
     strictWatchout,
   };
+}
+
+function isAIPlanningEnabled(state) {
+  return (state.programConfig?.planningMode || 'ai_primary_guardrailed') === 'ai_primary_guardrailed'
+    && !!state.aiConfig?.enabled
+    && !!state.aiConfig?.planningEnabled;
+}
+
+function getPlanSourceDisplayLabel(source) {
+  if (source === 'ai') return 'AI PLAN';
+  if (source === 'ai_guardrail_corrected') return 'AI + GUARDRAIL FIX';
+  return 'FALLBACK PLAN';
+}
+
+function getRollingDateKeys(days = 7, fromDate = new Date()) {
+  const totalDays = clamp(toNum(days, 7), 1, 14);
+  const base = new Date(fromDate);
+  base.setHours(0, 0, 0, 0);
+  const keys = [];
+  for (let i = 0; i < totalDays; i++) {
+    const d = new Date(base);
+    d.setDate(base.getDate() + i);
+    keys.push(getLocalDateKey(d));
+  }
+  return keys;
+}
+
+function createDailyInterviewQuestions(state, dateKey) {
+  const martialNext = computeNextMartialPhase(state);
+  return [
+    {
+      id: 'readiness_note',
+      label: 'Readiness',
+      prompt: 'How ready are you to train today (energy, focus, intent)?',
+      placeholder: 'Example: 7/10 ready, solid focus, moderate fatigue.',
+    },
+    {
+      id: 'soreness_hotspots',
+      label: 'Soreness',
+      prompt: 'Any soreness hotspots or pain flags that should change today\'s plan?',
+      placeholder: 'Example: mild left knee tightness, no pain under load.',
+    },
+    {
+      id: 'time_constraints',
+      label: 'Constraints',
+      prompt: 'Any schedule limits for today (AM/PM slot restrictions)?',
+      placeholder: 'Example: AM capped at 35 min, PM full session available.',
+    },
+    {
+      id: 'martial_intent',
+      label: 'Martial Intent',
+      prompt: `For martial work, should we push ${String(martialNext.phaseTarget).toUpperCase()} or rebuild technical quality first?`,
+      placeholder: 'Example: keep technical emphasis today.',
+    },
+  ];
+}
+
+function collectRecentManualOverrides(state, lookbackDays = 14, maxItems = 8) {
+  const cutoff = Date.now() - (lookbackDays * 24 * 60 * 60 * 1000);
+  const out = [];
+  for (let i = (state.sessionLogs || []).length - 1; i >= 0; i--) {
+    const log = state.sessionLogs[i];
+    const doneAt = Date.parse(log?.completedAt || log?.timestamp || '');
+    if (!Number.isFinite(doneAt) || doneAt < cutoff) continue;
+    const edits = Array.isArray(log?.manualEdits) ? log.manualEdits : [];
+    for (const edit of edits) {
+      out.push({
+        at: edit?.at || log?.completedAt || log?.timestamp || '',
+        sessionType: log?.type || 'unknown',
+        from: edit?.oldName || edit?.oldId || 'unknown',
+        to: edit?.newName || edit?.newId || 'unknown',
+      });
+      if (out.length >= maxItems) return out;
+    }
+  }
+  return out;
+}
+
+function buildAIPlanningSchema() {
+  return {
+    type: 'object',
+    required: ['weekStart', 'days'],
+    properties: {
+      weekStart: { type: 'string' },
+      weeklyFocus: { type: 'string' },
+      watchout: { type: 'string' },
+      days: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['date', 'morning', 'evening'],
+          properties: {
+            date: { type: 'string' },
+            rationale: { type: 'string' },
+            morning: {
+              type: 'object',
+              required: ['type', 'rationale'],
+              properties: {
+                type: { type: 'string' },
+                rationale: { type: 'string' },
+                progressionIntent: {
+                  type: 'object',
+                  properties: {
+                    domain: { type: 'string' },
+                    phaseTarget: { type: 'string' },
+                  },
+                },
+              },
+            },
+            evening: {
+              type: 'object',
+              required: ['type', 'rationale'],
+              properties: {
+                type: { type: 'string' },
+                rationale: { type: 'string' },
+                progressionIntent: {
+                  type: 'object',
+                  properties: {
+                    domain: { type: 'string' },
+                    phaseTarget: { type: 'string' },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  };
+}
+
+function buildAIPlanningPrompt(state, goals = {}, interviewAnswers = {}) {
+  const horizonDays = clamp(toNum(state.programConfig?.aiPlanHorizonDays, 7), 3, 7);
+  const dateKeys = getRollingDateKeys(horizonDays);
+  const scheduleTimes = {
+    morning: state.programConfig?.weekdayMorningTime || '07:30',
+    evening: state.programConfig?.weekdayEveningTime || '19:00',
+  };
+  const skipDebtScore = toNum(state.planState?.skipDebtScore, 0);
+  const martialNext = computeNextMartialPhase(state);
+  const recentOverrides = collectRecentManualOverrides(state, 21, 10);
+  const injuryFlags = Object.entries(state.constraints?.injuries || {})
+    .filter(([, v]) => !!v)
+    .map(([k]) => k);
+  const priorityTypes = getPriorityTypes(getSessionBalance(state.sessionLogs), state)
+    .slice(0, 4)
+    .map(item => `${item.type} (P${Math.round(item.score)})`)
+    .join(', ');
+  const interviewText = Object.entries(interviewAnswers || {})
+    .map(([k, v]) => `- ${k}: ${String(v || '').trim() || 'none'}`)
+    .join('\n') || '- none';
+  const overrideText = recentOverrides.length
+    ? recentOverrides.map(item => `- ${item.sessionType}: ${item.from} -> ${item.to}`).join('\n')
+    : '- none';
+
+  const goalSummary = {
+    primaryGoalType: goals.primaryGoalType || state.profile?.primaryGoalType || 'performance',
+    secondaryGoals: Array.isArray(goals.secondaryGoals) ? goals.secondaryGoals : (state.profile?.secondaryGoals || []),
+    timelineWeeks: toNum(goals.timelineWeeks, state.profile?.timelineWeeks || 12),
+    priorityDomains: Array.isArray(goals.priorityDomains) ? goals.priorityDomains : (state.profile?.priorityDomains || []),
+    goalNotes: goals.goalNotes || state.profile?.goalNotes || '',
+    mustAvoidTags: Array.isArray(goals.mustAvoidTags) ? goals.mustAvoidTags : (state.profile?.mustAvoidTags || []),
+  };
+
+  return `You are the primary planner for a performance training app.
+Return only valid JSON. No markdown. No explanations outside JSON.
+
+PLANNING RULES:
+- Build a ${horizonDays}-day rolling plan starting today.
+- Use only session types: gym, martialArts, running, mobility.
+- Keep 2 slots on weekdays only: morning (${scheduleTimes.morning}) and evening (${scheduleTimes.evening}).
+- Reassign weekday slot session types only within bounded limits (${state.programConfig?.slotReassignPolicy || 'bounded_reassign'}).
+- Weekends stay present in the days array, but may use mobility-focused or light sessions.
+- Martial progression must follow: technical -> conditioning -> sparring.
+- If skip debt exists, increase accountability and reduce progression aggressiveness.
+- Respect injuries/constraints. Never prescribe unsafe pairings.
+- Keep domain balance and avoid repeating one high-intensity type excessively.
+
+ATHLETE CONTEXT:
+- Name: ${state.profile?.name || 'Athlete'}
+- Readiness: ${state.readiness?.score || 70} (${state.readiness?.band || 'moderate'})
+- Current block: ${state.profile?.currentBlock || 'accumulation'}
+- Skip debt score: ${skipDebtScore}
+- Consecutive skipped slots: ${toNum(state.planState?.consecutiveSkippedSlots, 0)}
+- Martial next target: ${martialNext.phaseTarget}
+- Priority ranking: ${priorityTypes}
+- Injury flags: ${injuryFlags.length ? injuryFlags.join(', ') : 'none'}
+- Time override: ${state.constraints?.timeOverrideMinutes || 'none'}
+
+GOALS:
+- Primary goal type: ${goalSummary.primaryGoalType}
+- Secondary goals: ${(goalSummary.secondaryGoals || []).join(', ') || 'none'}
+- Timeline weeks: ${goalSummary.timelineWeeks}
+- Priority domains: ${(goalSummary.priorityDomains || []).join(', ') || 'none'}
+- Goal notes: ${goalSummary.goalNotes || 'none'}
+- Must avoid tags: ${(goalSummary.mustAvoidTags || []).join(', ') || 'none'}
+
+TODAY INTERVIEW:
+${interviewText}
+
+RECENT MANUAL OVERRIDES:
+${overrideText}
+
+REQUIRED DATES:
+${dateKeys.map(key => `- ${key}`).join('\n')}
+
+OUTPUT JSON SHAPE:
+{
+  "weekStart": "YYYY-MM-DD",
+  "weeklyFocus": "string",
+  "watchout": "string",
+  "days": [
+    {
+      "date": "YYYY-MM-DD",
+      "rationale": "string",
+      "morning": {
+        "type": "gym|martialArts|running|mobility",
+        "rationale": "string",
+        "progressionIntent": { "domain": "string", "phaseTarget": "technical|conditioning|sparring" }
+      },
+      "evening": {
+        "type": "gym|martialArts|running|mobility",
+        "rationale": "string",
+        "progressionIntent": { "domain": "string", "phaseTarget": "technical|conditioning|sparring" }
+      }
+    }
+  ]
+}`;
+}
+
+function normalizePlanSessionType(type) {
+  const normalized = String(type || '').trim().toLowerCase();
+  if (!normalized) return 'gym';
+  if (normalized === 'gym' || normalized === 'strength' || normalized === 'strengthskills' || normalized === 'strength_skills') return 'gym';
+  if (normalized === 'martialarts' || normalized === 'martial_arts' || normalized === 'martial') return 'martialArts';
+  if (normalized === 'running' || normalized === 'run' || normalized === 'conditioning') return 'running';
+  if (normalized === 'mobility' || normalized === 'recovery' || normalized === 'cooloff') return 'mobility';
+  return AI_PLANNER_ALLOWED_TYPES.has(type) ? type : 'gym';
+}
+
+function validateAIPlanSchema(plan, state) {
+  if (!plan || typeof plan !== 'object' || Array.isArray(plan)) {
+    throw createGeminiParseError('planning', JSON.stringify(plan), 'invalid_json', 'primary');
+  }
+
+  if (!Array.isArray(plan.days) || plan.days.length === 0) {
+    throw createGeminiParseError('planning', JSON.stringify(plan), 'invalid_json', 'primary');
+  }
+
+  const horizonDays = clamp(toNum(state.programConfig?.aiPlanHorizonDays, 7), 3, 7);
+  const requiredKeys = new Set(getRollingDateKeys(horizonDays));
+  const normalizedDays = [];
+
+  for (const day of plan.days) {
+    const dateKey = String(day?.date || '').trim();
+    if (!dateKey) continue;
+    const morning = day?.morning && typeof day.morning === 'object' ? day.morning : null;
+    const evening = day?.evening && typeof day.evening === 'object' ? day.evening : null;
+    normalizedDays.push({
+      date: dateKey,
+      rationale: String(day?.rationale || '').trim(),
+      morning: morning ? {
+        type: normalizePlanSessionType(morning.type),
+        rationale: String(morning.rationale || '').trim(),
+        progressionIntent: morning.progressionIntent || null,
+      } : null,
+      evening: evening ? {
+        type: normalizePlanSessionType(evening.type),
+        rationale: String(evening.rationale || '').trim(),
+        progressionIntent: evening.progressionIntent || null,
+      } : null,
+    });
+    requiredKeys.delete(dateKey);
+  }
+
+  return {
+    id: plan.id || `ai_plan_${Date.now()}`,
+    generatedAt: new Date().toISOString(),
+    weekStart: String(plan.weekStart || getWeekStart(new Date()).toISOString().slice(0, 10)),
+    weeklyFocus: String(plan.weeklyFocus || '').trim(),
+    watchout: String(plan.watchout || '').trim(),
+    days: normalizedDays,
+    missingDates: Array.from(requiredKeys),
+  };
+}
+
+function defaultProgressionIntentForType(type, state) {
+  if (type === 'martialArts') {
+    const martial = computeNextMartialPhase(state);
+    return { domain: 'martialArts', phaseTarget: martial.phaseTarget };
+  }
+  return { domain: getDomainFromType(type, null) || type };
+}
+
+function mapAIPlanToScheduledSlots(plan, state) {
+  const cfg = state.programConfig || {};
+  const morningTime = cfg.weekdayMorningTime || '07:30';
+  const eveningTime = cfg.weekdayEveningTime || '19:00';
+  const nowIso = new Date().toISOString();
+  const existingByDate = { ...(state.planState?.scheduledSlotsByDate || {}) };
+  const merged = { ...existingByDate };
+
+  for (const day of plan.days || []) {
+    const dateKey = String(day?.date || '').trim();
+    if (!dateKey) continue;
+    const dateObj = new Date(`${dateKey}T00:00:00`);
+    if (!isWeekdayDate(dateObj)) continue;
+
+    const prevDay = merged[dateKey] || {};
+    const nextDay = { ...prevDay };
+    for (const slotKey of ['morning', 'evening']) {
+      const prevSlot = prevDay[slotKey];
+      if (prevSlot && (prevSlot.status === 'completed' || prevSlot.status === 'skipped')) {
+        nextDay[slotKey] = prevSlot;
+        continue;
+      }
+      const plannedSlot = day?.[slotKey] || {};
+      const type = normalizePlanSessionType(plannedSlot?.type || prevSlot?.type || 'gym');
+      const scheduledTime = slotKey === 'morning' ? morningTime : eveningTime;
+      nextDay[slotKey] = {
+        ...(prevSlot || {}),
+        type,
+        slot: slotKey,
+        status: 'pending',
+        scheduledTime,
+        dueAt: getSlotDueDate(dateKey, scheduledTime).toISOString(),
+        source: 'ai_plan',
+        aiPlanId: plan.id,
+        aiRationale: String(plannedSlot?.rationale || day?.rationale || '').trim(),
+        progressionIntent: plannedSlot?.progressionIntent || prevSlot?.progressionIntent || defaultProgressionIntentForType(type, state),
+        strictPrompt: `Scheduled ${slotKey.toUpperCase()} session from AI plan. Complete this slot and protect progression.`,
+        createdAt: prevSlot?.createdAt || nowIso,
+        updatedAt: nowIso,
+      };
+    }
+    merged[dateKey] = nextDay;
+  }
+
+  return merged;
+}
+
+function applyPlanningGuardrails(plan, state) {
+  const guardrailFixes = [];
+  const horizonDays = clamp(toNum(state.programConfig?.aiPlanHorizonDays, 7), 3, 7);
+  const rankedTypes = getPriorityTypes(getSessionBalance(state.sessionLogs), state).map(item => item.type);
+  const fallbackTypeFor = (slotIndex = 0) => rankedTypes[slotIndex % Math.max(1, rankedTypes.length)] || 'gym';
+  const byDate = new Map((plan.days || []).map(day => [day.date, { ...day }]));
+
+  for (const dateKey of getRollingDateKeys(horizonDays)) {
+    if (!byDate.has(dateKey)) {
+      guardrailFixes.push(`Inserted missing day ${dateKey}.`);
+      byDate.set(dateKey, { date: dateKey, rationale: 'Guardrail inserted missing planning day.' });
+    }
+    const day = byDate.get(dateKey);
+    const dateObj = new Date(`${dateKey}T00:00:00`);
+    const weekday = isWeekdayDate(dateObj);
+    if (!weekday) {
+      day.morning = day.morning || { type: 'mobility', rationale: 'Weekend recovery-biased slot.' };
+      day.evening = day.evening || { type: 'mobility', rationale: 'Weekend recovery-biased slot.' };
+      continue;
+    }
+    for (const slotKey of ['morning', 'evening']) {
+      if (!day[slotKey] || typeof day[slotKey] !== 'object') {
+        day[slotKey] = { type: fallbackTypeFor(slotKey === 'morning' ? 0 : 1), rationale: 'Guardrail filled missing slot.' };
+        guardrailFixes.push(`Filled missing ${slotKey} slot on ${dateKey}.`);
+      }
+      day[slotKey].type = normalizePlanSessionType(day[slotKey].type);
+      if (!AI_PLANNER_ALLOWED_TYPES.has(day[slotKey].type)) {
+        day[slotKey].type = fallbackTypeFor(slotKey === 'morning' ? 0 : 1);
+        guardrailFixes.push(`Corrected invalid session type on ${dateKey} ${slotKey}.`);
+      }
+      if (!String(day[slotKey].rationale || '').trim()) {
+        day[slotKey].rationale = 'Guardrail-generated rationale for safe progression continuity.';
+      }
+      day[slotKey].progressionIntent = day[slotKey].progressionIntent || defaultProgressionIntentForType(day[slotKey].type, state);
+    }
+  }
+
+  const injuries = state.constraints?.injuries || {};
+  for (const day of byDate.values()) {
+    for (const slotKey of ['morning', 'evening']) {
+      const slot = day[slotKey];
+      if (!slot) continue;
+      let nextType = slot.type;
+      if (injuries.knee && nextType === 'running') nextType = 'mobility';
+      if (injuries.back && nextType === 'gym') nextType = 'mobility';
+      if (injuries.shoulder && (nextType === 'gym' || nextType === 'martialArts')) nextType = 'mobility';
+      if (nextType !== slot.type) {
+        guardrailFixes.push(`Adjusted ${day.date} ${slotKey} due to injury constraints.`);
+        slot.type = nextType;
+        slot.rationale = `${slot.rationale} (guardrail: injury-safe adjustment)`.trim();
+        slot.progressionIntent = defaultProgressionIntentForType(nextType, state);
+      }
+    }
+  }
+
+  const sortedWeekdaySlots = [];
+  for (const dateKey of getRollingDateKeys(horizonDays)) {
+    const day = byDate.get(dateKey);
+    const weekday = isWeekdayDate(new Date(`${dateKey}T00:00:00`));
+    if (!weekday || !day) continue;
+    sortedWeekdaySlots.push({ dateKey, slotKey: 'morning', slot: day.morning });
+    sortedWeekdaySlots.push({ dateKey, slotKey: 'evening', slot: day.evening });
+  }
+  let highStreak = 0;
+  for (const item of sortedWeekdaySlots) {
+    const isHigh = item.slot?.type === 'gym' || item.slot?.type === 'martialArts' || item.slot?.type === 'running';
+    highStreak = isHigh ? highStreak + 1 : 0;
+    if (highStreak > 3) {
+      item.slot.type = 'mobility';
+      item.slot.rationale = `${item.slot.rationale} (guardrail: high-intensity streak break)`.trim();
+      item.slot.progressionIntent = defaultProgressionIntentForType('mobility', state);
+      highStreak = 0;
+      guardrailFixes.push(`Converted ${item.dateKey} ${item.slotKey} to mobility to break intensity streak.`);
+    }
+  }
+
+  const skipDebt = toNum(state.planState?.skipDebtScore, 0);
+  if (skipDebt > 0 && sortedWeekdaySlots.length > 0) {
+    const skippedTypeCounts = getSkippedSlotTypeCounts(state.planState, 21);
+    const debtType = Object.entries(skippedTypeCounts)
+      .sort((a, b) => b[1] - a[1])[0]?.[0] || fallbackTypeFor(0);
+    const firstSlot = sortedWeekdaySlots[0].slot;
+    if (firstSlot && firstSlot.type !== debtType && AI_PLANNER_ALLOWED_TYPES.has(debtType)) {
+      firstSlot.type = debtType;
+      firstSlot.rationale = `Accountability priority: recover skipped ${debtType} exposure early.`;
+      firstSlot.progressionIntent = defaultProgressionIntentForType(debtType, state);
+      guardrailFixes.push('Applied skip-debt accountability override to first pending weekday slot.');
+    }
+  }
+
+  const normalizedPlan = {
+    ...plan,
+    days: Array.from(byDate.values()).sort((a, b) => String(a.date).localeCompare(String(b.date))),
+  };
+  return {
+    plan: normalizedPlan,
+    guardrailFixes,
+    source: guardrailFixes.length ? 'ai_guardrail_corrected' : 'ai',
+  };
+}
+
+async function callGeminiPlanningWithRetry({ apiKey, model, state, goals, interviewAnswers }) {
+  const planningModel = normalizeGeminiModel(model || state.aiConfig?.planningModel || state.aiConfig?.model);
+  const endpoint = buildGeminiEndpoint(planningModel);
+  const schema = buildAIPlanningSchema();
+  const prompt = buildAIPlanningPrompt(state, goals, interviewAnswers);
+  const body = {
+    contents: [{ parts: [{ text: prompt }] }],
+    generationConfig: {
+      temperature: 0.2,
+      maxOutputTokens: 2048,
+      responseMimeType: 'application/json',
+      responseSchema: schema,
+    },
+  };
+  const payload = await callGeminiWithRetry({
+    apiKey,
+    endpoint,
+    body,
+    requestType: 'AI workout planning',
+  });
+  const rawText = sanitizeGeminiText(extractGeminiText(payload));
+  if (!rawText) throw createGeminiParseError('planning', '', 'blocked_or_empty', 'primary');
+  const parsed = parseGeminiJson(rawText, 'planning');
+  return { parsed, endpoint, model: planningModel };
+}
+
+function fallbackToDeterministicPlan(state, reason = 'AI planning unavailable') {
+  return {
+    source: 'fallback_engine',
+    status: 'fallback',
+    reason,
+  };
+}
+
+function recordManualPlanEdits(session, edits = []) {
+  if (!session || !Array.isArray(edits) || edits.length === 0) return [];
+  return edits.map(edit => ({
+    at: edit?.at || new Date().toISOString(),
+    type: 'manual_plan_edit',
+    sessionType: session?.type || 'unknown',
+    oldId: edit?.oldId || '',
+    newId: edit?.newId || '',
+    oldName: edit?.oldName || '',
+    newName: edit?.newName || '',
+  }));
 }
 
 function markScheduledSlotCompleted(planState, prescription, completedAt, sessionType) {
@@ -2451,24 +2961,79 @@ function computeSessionPriority(type, state, balance, now = new Date()) {
 function buildRollingPlanForState(state) {
   const balance = getSessionBalance(state.sessionLogs);
   const ranked = SESSION_TYPES.map(type => computeSessionPriority(type, state, balance)).sort((a, b) => b.score - a.score);
-  const [primary, secondary] = ranked;
+  const [deterministicPrimary, deterministicSecondary] = ranked;
   const readiness = state.readiness;
   const timeFit = state.constraints.timeOverrideMinutes || state.programConfig.defaultSessionMinutes;
   const schedulePatch = applySkipDebtAndReplan(state, ranked);
   const martialNext = computeNextMartialPhase(state);
+  const planningEnabled = isAIPlanningEnabled(state);
+  const aiPlan = state.planState?.aiPlan || null;
+  const aiPlanStatus = state.planState?.aiPlanStatus || 'idle';
+  const aiPlanSource = state.planState?.aiPlanSource || 'fallback_engine';
+  const hasUsableAIPlan = planningEnabled
+    && AI_PRIMARY_PLAN_SOURCES.has(aiPlanSource)
+    && aiPlan
+    && Array.isArray(aiPlan.days)
+    && aiPlan.days.length > 0;
+  const scheduledSlotsByDate = hasUsableAIPlan
+    ? (state.planState?.scheduledSlotsByDate || {})
+    : schedulePatch.scheduledSlotsByDate;
+  const todayDateKey = getLocalDateKey(new Date());
+  const todaySlots = scheduledSlotsByDate?.[todayDateKey] || {};
 
-  const reasonText = primary
-    ? `${FREQUENCY_TARGETS[primary.type].label} selected: deficit ${primary.deficit > 0 ? primary.deficit : 0}, readiness ${readiness.score}, fatigue debt ${Math.round(state.athleteModel.fatigueDebt)}${schedulePatch.skipDebtScore > 0 ? `, skip debt ${schedulePatch.skipDebtScore}` : ''}`
+  const deterministicReasonText = deterministicPrimary
+    ? `${FREQUENCY_TARGETS[deterministicPrimary.type].label} selected: deficit ${deterministicPrimary.deficit > 0 ? deterministicPrimary.deficit : 0}, readiness ${readiness.score}, fatigue debt ${Math.round(state.athleteModel.fatigueDebt)}${schedulePatch.skipDebtScore > 0 ? `, skip debt ${schedulePatch.skipDebtScore}` : ''}`
     : 'No recommendation yet';
-
-  const weeklyFocus = ranked.slice(0, 2).map(r => FREQUENCY_TARGETS[r.type].label).join(' + ');
+  const deterministicWeeklyFocus = ranked.slice(0, 2).map(r => FREQUENCY_TARGETS[r.type].label).join(' + ');
   const baseWatchout =
     state.athleteModel.fatigueDebt > 35
       ? 'Fatigue debt high: prioritize quality over intensity.'
       : readiness.band === 'low'
         ? 'Low readiness: use recovery-biased session variants.'
         : 'No major risk flags.';
-  const watchout = schedulePatch.strictWatchout || baseWatchout;
+
+  let primary = deterministicPrimary || null;
+  let secondary = deterministicSecondary || null;
+  let reasonText = deterministicReasonText;
+  let weeklyFocus = deterministicWeeklyFocus;
+  let watchout = schedulePatch.strictWatchout || baseWatchout;
+  let upcoming = ranked.slice(0, 4);
+
+  if (hasUsableAIPlan) {
+    const dayPlan = (aiPlan.days || []).find(day => day?.date === todayDateKey) || null;
+    const orderedSlots = ['morning', 'evening']
+      .map(slot => todaySlots?.[slot])
+      .filter(Boolean);
+    const pendingSlots = orderedSlots.filter(slot => slot.status === 'pending');
+    const recommendedSlots = pendingSlots.length ? pendingSlots : orderedSlots;
+    const toPriority = (slot) => {
+      const fallback = ranked.find(item => item.type === slot?.type);
+      return fallback ? { ...fallback, type: slot.type } : computeSessionPriority(slot?.type || 'gym', state, balance);
+    };
+    if (recommendedSlots[0]) primary = toPriority(recommendedSlots[0]);
+    if (recommendedSlots[1]) secondary = toPriority(recommendedSlots[1]);
+    reasonText =
+      recommendedSlots.map(slot => slot.aiRationale || slot.strictPrompt).filter(Boolean).join(' ')
+      || dayPlan?.rationale
+      || `AI generated a ${clamp(toNum(state.programConfig?.aiPlanHorizonDays, 7), 3, 7)}-day rolling plan.`;
+    weeklyFocus = aiPlan.weeklyFocus || deterministicWeeklyFocus;
+    watchout = schedulePatch.strictWatchout || aiPlan.watchout || baseWatchout;
+    upcoming = (aiPlan.days || [])
+      .flatMap(day => (['morning', 'evening'].map(slotKey => {
+        const slot = day?.[slotKey];
+        if (!slot || !slot.type) return null;
+        const priority = computeSessionPriority(normalizePlanSessionType(slot.type), state, balance);
+        return {
+          ...priority,
+          type: normalizePlanSessionType(slot.type),
+          slot: slotKey,
+          date: day.date,
+          aiRationale: slot.rationale || day?.rationale || '',
+        };
+      })))
+      .filter(Boolean)
+      .slice(0, 4);
+  }
 
   return {
     generatedAt: new Date().toISOString(),
@@ -2477,7 +3042,7 @@ function buildRollingPlanForState(state) {
     reasonText,
     weeklyFocus,
     watchout,
-    upcoming: ranked.slice(0, 4),
+    upcoming,
     acknowledgedPrompts: { ...(state.planState?.acknowledgedPrompts || {}) },
     progressionPrompts: state.planState?.progressionPrompts || [],
     weeklySummary: state.planState?.weeklySummary || null,
@@ -2488,10 +3053,20 @@ function buildRollingPlanForState(state) {
     weeklySummaryLastError: state.planState?.weeklySummaryLastError || null,
     exerciseHistoryIndex: state.planState?.exerciseHistoryIndex || {},
     lastGeneratedAtByType: state.planState?.lastGeneratedAtByType || {},
-    scheduledSlotsByDate: schedulePatch.scheduledSlotsByDate,
+    scheduledSlotsByDate,
     skipDebtScore: schedulePatch.skipDebtScore,
     consecutiveSkippedSlots: schedulePatch.consecutiveSkippedSlots,
     lastScheduleReplanAt: schedulePatch.lastScheduleReplanAt,
+    aiPlan,
+    aiPlanStatus: planningEnabled
+      ? (hasUsableAIPlan ? 'ready' : aiPlanStatus)
+      : 'fallback',
+    aiInterview: state.planState?.aiInterview || null,
+    aiPlanLastError: state.planState?.aiPlanLastError || null,
+    aiPlanSource: planningEnabled
+      ? (hasUsableAIPlan ? aiPlanSource : (state.planState?.aiPlanSource || 'fallback_engine'))
+      : 'fallback_engine',
+    aiPlanNeedsRefresh: !!state.planState?.aiPlanNeedsRefresh,
     martialArtsNextPhase: martialNext.phaseTarget,
     martialArtsNextRationale: martialNext.rationale,
     timeFit,
@@ -2548,6 +3123,13 @@ function createSessionFromType(state, type, source = 'manual', timeMinutes = nul
   const scheduledSlot = options?.scheduledSlot || null;
   const scheduledDate = options?.scheduledDate || null;
   const progressionIntent = options?.progressionIntent || null;
+  const plannerSource = options?.plannerSource
+    || (AI_PRIMARY_PLAN_SOURCES.has(state.planState?.aiPlanSource) ? 'ai' : 'fallback_engine');
+  const aiPlanId = options?.aiPlanId || state.planState?.aiPlan?.id || null;
+  const aiRationale = options?.aiRationale || null;
+  const guardrailFixes = Array.isArray(options?.guardrailFixes)
+    ? options.guardrailFixes
+    : (Array.isArray(state.planState?.aiPlan?.guardrailFixes) ? state.planState.aiPlan.guardrailFixes : []);
   const martialProgression = computeNextMartialPhase(state);
   const maSessionSubtype = type === 'martialArts'
     ? (options?.maSessionSubtype || progressionIntent?.phaseTarget || martialProgression.phaseTarget || 'technical')
@@ -2581,11 +3163,17 @@ function createSessionFromType(state, type, source = 'manual', timeMinutes = nul
       sessionVariant,
       intensityTag,
       targetRPE,
-      reasonText: reasonOverride || (scheduledSlot ? `Scheduled ${String(scheduledSlot).toUpperCase()} slot. Complete this session and protect progression.` : state.planState.reasonText),
+      reasonText: reasonOverride
+        || aiRationale
+        || (scheduledSlot ? `Scheduled ${String(scheduledSlot).toUpperCase()} slot. Complete this session and protect progression.` : state.planState.reasonText),
       source,
       timeFit: actualTimeMinutes,
       scheduledSlot,
       scheduledDate,
+      plannerSource,
+      aiPlanId,
+      aiRationale,
+      guardrailFixes,
       progressionIntent: progressionIntent || (type === 'martialArts' ? { domain: 'martialArts', phaseTarget: maSessionSubtype } : null),
       selectionMeta: generated?.selectionMeta || null,
     },
@@ -2595,6 +3183,7 @@ function createSessionFromType(state, type, source = 'manual', timeMinutes = nul
       inputs: { ...state.readiness.inputs },
       at: new Date().toISOString(),
     },
+    manualEdits: [],
     timestamp: new Date().toISOString(),
   };
 }
@@ -2721,6 +3310,7 @@ function completeSessionInternal(state, payload = {}) {
     completionQuality,
     adaptationApplied,
     completedAsModified: completeAsModified,
+    manualEdits: Array.isArray(state.activeSession?.manualEdits) ? state.activeSession.manualEdits : [],
     completedAt: new Date().toISOString(),
   };
   const updatedExerciseHistoryIndex = appendExerciseHistoryIndex(
@@ -2810,6 +3400,7 @@ function completeSessionInternal(state, payload = {}) {
   const basePlanState = {
     ...state.planState,
     exerciseHistoryIndex: updatedExerciseHistoryIndex,
+    aiPlanNeedsRefresh: true,
   };
   const completedPlanState = markScheduledSlotCompleted(
     basePlanState,
@@ -2845,6 +3436,7 @@ function completeSessionInternal(state, payload = {}) {
       adaptationSummary: adaptationApplied.summary,
       reason: newLog.prescription?.reasonText || state.planState.reasonText,
     },
+    ...recordManualPlanEdits(newLog, newLog.manualEdits || []),
   ].slice(-120);
 
   const progressionPrompts = (sessionType === 'gym' || sessionType === 'calisthenics')
@@ -2907,6 +3499,7 @@ function migrateSessionLog(log, idx) {
     id,
     readinessSnapshot: log.readinessSnapshot || { score: 70, band: 'moderate', inputs: createReadiness().inputs, at: log.timestamp || new Date().toISOString() },
     prescription: normalizedPrescription,
+    manualEdits: Array.isArray(log.manualEdits) ? log.manualEdits : [],
     exerciseResults,
     completionQuality: log.completionQuality || computeCompletionQuality(log.rpe || 6, log.recovery || 6, exerciseResults, log.rpe || 7),
     adaptationApplied: log.adaptationApplied || { summary: 'Legacy session', deloadRecommended: false, nextFocus: 'Continue baseline progression' },
@@ -2931,6 +3524,12 @@ function migrateState(raw) {
       skillAssessments: raw.profile?.skillAssessments || { maxPullUps:0, maxPushUps:0, squatRM:0, deadliftRM:0, benchRM:0, runningPaceEasy:0, tuckPlancheHold:0, handstandHold:0 },
       primaryGoal: raw.profile?.primaryGoal || 'complete_athlete',
       goals: raw.profile?.goals || [],
+      primaryGoalType: raw.profile?.primaryGoalType || base.profile.primaryGoalType,
+      secondaryGoals: Array.isArray(raw.profile?.secondaryGoals) ? raw.profile.secondaryGoals : base.profile.secondaryGoals,
+      timelineWeeks: toNum(raw.profile?.timelineWeeks, base.profile.timelineWeeks),
+      priorityDomains: Array.isArray(raw.profile?.priorityDomains) ? raw.profile.priorityDomains : base.profile.priorityDomains,
+      goalNotes: raw.profile?.goalNotes || '',
+      mustAvoidTags: Array.isArray(raw.profile?.mustAvoidTags) ? raw.profile.mustAvoidTags : base.profile.mustAvoidTags,
     },
     programConfig: {
       ...base.programConfig,
@@ -2951,9 +3550,12 @@ function migrateState(raw) {
     aiConfig: (() => {
       const mergedAI = { ...createAIConfig(), ...(raw.aiConfig || {}) };
       const normalizedModel = normalizeGeminiModel(mergedAI.model);
+      const normalizedPlanningModel = normalizeGeminiModel(mergedAI.planningModel || normalizedModel);
       return {
         ...mergedAI,
         model: normalizedModel,
+        planningModel: normalizedPlanningModel,
+        planningEnabled: mergedAI.planningEnabled !== undefined ? !!mergedAI.planningEnabled : true,
         endpoint: buildGeminiEndpoint(normalizedModel),
       };
     })(),
@@ -2998,6 +3600,12 @@ function migrateState(raw) {
       skipDebtScore: toNum(raw.planState?.skipDebtScore, 0),
       consecutiveSkippedSlots: toNum(raw.planState?.consecutiveSkippedSlots, 0),
       lastScheduleReplanAt: raw.planState?.lastScheduleReplanAt || null,
+      aiPlan: raw.planState?.aiPlan || null,
+      aiPlanStatus: raw.planState?.aiPlanStatus || (raw.planState?.aiPlan ? 'ready' : 'idle'),
+      aiInterview: raw.planState?.aiInterview || null,
+      aiPlanLastError: raw.planState?.aiPlanLastError || null,
+      aiPlanSource: raw.planState?.aiPlanSource || (raw.planState?.aiPlan ? 'ai' : 'fallback_engine'),
+      aiPlanNeedsRefresh: raw.planState?.aiPlanNeedsRefresh !== undefined ? !!raw.planState.aiPlanNeedsRefresh : true,
       martialArtsNextPhase: raw.planState?.martialArtsNextPhase || null,
       martialArtsNextRationale: raw.planState?.martialArtsNextRationale || null,
     },
@@ -3034,7 +3642,7 @@ function migrateState(raw) {
   }
 
   const readinessScored = calculateReadiness(merged.readiness.inputs);
-  const next = {
+  let next = {
     ...merged,
     domains: {
       ...merged.domains,
@@ -3042,6 +3650,15 @@ function migrateState(raw) {
     },
     readiness: { ...merged.readiness, ...readinessScored },
   };
+  if (next.planState?.aiPlan && Object.keys(next.planState?.scheduledSlotsByDate || {}).length === 0) {
+    next = {
+      ...next,
+      planState: {
+        ...next.planState,
+        scheduledSlotsByDate: mapAIPlanToScheduledSlots(next.planState.aiPlan, next),
+      },
+    };
+  }
   const athleteModel = computeAthleteModelFromState(next);
   const planState = buildRollingPlanForState({ ...next, athleteModel });
   return { ...next, athleteModel, planState };
@@ -3052,14 +3669,28 @@ function appReducer(state, action) {
     case 'SET_VIEW':
       return { ...state, view: action.payload };
     case 'SET_BLOCK':
-      return { ...state, profile: { ...state.profile, currentBlock: action.payload } };
+      return {
+        ...state,
+        profile: { ...state.profile, currentBlock: action.payload },
+        planState: {
+          ...state.planState,
+          aiPlanNeedsRefresh: true,
+        },
+      };
     case 'NEXT_ONBOARD_STEP':
       return { ...state, onboardStep: Math.min(state.onboardStep + 1, 2) };
     case 'PREV_ONBOARD_STEP':
       return { ...state, onboardStep: Math.max(state.onboardStep - 1, 0) };
     case 'SET_PROFILE_FIELD': {
       const { field, value } = action.payload;
-      return { ...state, profile: { ...state.profile, [field]: value } };
+      return {
+        ...state,
+        profile: { ...state.profile, [field]: value },
+        planState: {
+          ...state.planState,
+          aiPlanNeedsRefresh: true,
+        },
+      };
     }
     case 'UPDATE_PROFILE_FIELD': {
       const { field, subfield, value } = action.payload || {};
@@ -3070,18 +3701,39 @@ function appReducer(state, action) {
             ...state.profile,
             [field]: { ...(state.profile[field] || {}), [subfield]: value },
           },
+          planState: {
+            ...state.planState,
+            aiPlanNeedsRefresh: true,
+          },
         };
       }
-      return { ...state, profile: { ...state.profile, [field]: value } };
+      return {
+        ...state,
+        profile: { ...state.profile, [field]: value },
+        planState: {
+          ...state.planState,
+          aiPlanNeedsRefresh: true,
+        },
+      };
     }
     case 'UPDATE_AI_CONFIG': {
-      const mergedAI = { ...state.aiConfig, ...(action.payload || {}) };
+      const payload = action.payload || {};
+      const mergedAI = { ...state.aiConfig, ...payload };
       const normalizedModel = normalizeGeminiModel(mergedAI.model);
+      const normalizedPlanningModel = normalizeGeminiModel(
+        payload.planningModel !== undefined
+          ? payload.planningModel
+          : (payload.model !== undefined
+            && (state.aiConfig.planningModel === state.aiConfig.model || !state.aiConfig.planningModel)
+              ? normalizedModel
+              : (mergedAI.planningModel || normalizedModel))
+      );
       return {
         ...state,
         aiConfig: {
           ...mergedAI,
           model: normalizedModel,
+          planningModel: normalizedPlanningModel,
           endpoint: buildGeminiEndpoint(normalizedModel),
         },
       };
@@ -3114,6 +3766,124 @@ function appReducer(state, action) {
         },
       };
     }
+    case 'START_DAILY_AI_INTERVIEW': {
+      const dateKey = action.payload?.dateKey || getLocalDateKey(new Date());
+      const existing = state.planState?.aiInterview;
+      const isSameDate = existing?.dateKey === dateKey;
+      const questions = Array.isArray(action.payload?.questions) && action.payload.questions.length
+        ? action.payload.questions
+        : (isSameDate && Array.isArray(existing?.questions) && existing.questions.length
+          ? existing.questions
+          : createDailyInterviewQuestions(state, dateKey));
+      return {
+        ...state,
+        planState: {
+          ...state.planState,
+          aiPlanStatus: 'interview',
+          aiPlanLastError: null,
+          aiInterview: {
+            dateKey,
+            questions,
+            answers: isSameDate ? { ...(existing?.answers || {}) } : {},
+            completedAt: null,
+          },
+        },
+      };
+    }
+    case 'UPDATE_AI_INTERVIEW_ANSWER': {
+      const { id, value } = action.payload || {};
+      if (!id) return state;
+      const dateKey = state.planState?.aiInterview?.dateKey || getLocalDateKey(new Date());
+      const interview = state.planState?.aiInterview || {
+        dateKey,
+        questions: createDailyInterviewQuestions(state, dateKey),
+        answers: {},
+        completedAt: null,
+      };
+      return {
+        ...state,
+        planState: {
+          ...state.planState,
+          aiInterview: {
+            ...interview,
+            answers: {
+              ...(interview.answers || {}),
+              [id]: value,
+            },
+          },
+        },
+      };
+    }
+    case 'SUBMIT_DAILY_AI_INTERVIEW': {
+      const dateKey = state.planState?.aiInterview?.dateKey || getLocalDateKey(new Date());
+      const existing = state.planState?.aiInterview || {
+        dateKey,
+        questions: createDailyInterviewQuestions(state, dateKey),
+        answers: {},
+      };
+      return {
+        ...state,
+        planState: {
+          ...state.planState,
+          aiPlanStatus: 'generating',
+          aiPlanNeedsRefresh: true,
+          aiPlanLastError: null,
+          aiInterview: {
+            ...existing,
+            completedAt: new Date().toISOString(),
+          },
+        },
+      };
+    }
+    case 'GENERATE_AI_PLAN':
+      return {
+        ...state,
+        planState: {
+          ...state.planState,
+          aiPlanStatus: 'generating',
+          aiPlanLastError: null,
+        },
+      };
+    case 'SET_AI_PLAN': {
+      const source = action.payload?.source || 'ai';
+      const quality = action.payload?.quality || (source === 'ai_guardrail_corrected' ? 'guardrail_fixed' : 'valid');
+      const nextPlanState = {
+        ...state.planState,
+        aiPlan: action.payload?.aiPlan || null,
+        aiPlanStatus: action.payload?.aiPlan ? 'ready' : state.planState.aiPlanStatus,
+        aiPlanLastError: null,
+        aiPlanSource: action.payload?.aiPlan ? source : state.planState.aiPlanSource,
+        aiPlanNeedsRefresh: false,
+        scheduledSlotsByDate: action.payload?.scheduledSlotsByDate || state.planState.scheduledSlotsByDate,
+      };
+      const next = {
+        ...state,
+        aiConfig: {
+          ...state.aiConfig,
+          planningLastQuality: quality,
+        },
+        planState: nextPlanState,
+      };
+      return { ...next, planState: buildRollingPlanForState(next) };
+    }
+    case 'SET_AI_PLAN_ERROR': {
+      const fallback = fallbackToDeterministicPlan(state, action.payload?.error || 'AI planning failed.');
+      const next = {
+        ...state,
+        aiConfig: {
+          ...state.aiConfig,
+          planningLastQuality: 'fallback',
+        },
+        planState: {
+          ...state.planState,
+          aiPlanStatus: fallback.status,
+          aiPlanLastError: fallback.reason,
+          aiPlanSource: fallback.source,
+          aiPlanNeedsRefresh: true,
+        },
+      };
+      return { ...next, planState: buildRollingPlanForState(next) };
+    }
     case 'SET_WEEKLY_SUMMARY': {
       const { summary, loading, generatedAt, cooldownUntil, lastAttemptAt, lastError } = action.payload || {};
       return {
@@ -3140,6 +3910,10 @@ function appReducer(state, action) {
             ...(action.payload?.featureFlags || {}),
           },
         },
+        planState: {
+          ...state.planState,
+          aiPlanNeedsRefresh: true,
+        },
       };
       return { ...next, planState: buildRollingPlanForState(next) };
     }
@@ -3151,7 +3925,15 @@ function appReducer(state, action) {
         ...state.athleteModel,
         readinessTrend: [...(state.athleteModel.readinessTrend || []), { x: new Date().toLocaleDateString(), score: readiness.score }].slice(-30),
       };
-      const next = { ...state, readiness, athleteModel };
+      const next = {
+        ...state,
+        readiness,
+        athleteModel,
+        planState: {
+          ...state.planState,
+          aiPlanNeedsRefresh: true,
+        },
+      };
       return { ...next, planState: buildRollingPlanForState(next) };
     }
     case 'SET_CONSTRAINT_FLAG': {
@@ -3162,7 +3944,14 @@ function appReducer(state, action) {
       if (key === 'equipment' && value) {
         if (!constraints.unavailableEquipment.includes(value)) constraints.unavailableEquipment = [...constraints.unavailableEquipment, value];
       }
-      const next = { ...state, constraints };
+      const next = {
+        ...state,
+        constraints,
+        planState: {
+          ...state.planState,
+          aiPlanNeedsRefresh: true,
+        },
+      };
       return { ...next, planState: buildRollingPlanForState(next) };
     }
     case 'CLEAR_CONSTRAINT_FLAG': {
@@ -3171,7 +3960,14 @@ function appReducer(state, action) {
       if (key in constraints.injuries) constraints.injuries[key] = false;
       if (key === 'timeOverrideMinutes') constraints.timeOverrideMinutes = null;
       if (key === 'equipment' && value) constraints.unavailableEquipment = constraints.unavailableEquipment.filter(item => item !== value);
-      const next = { ...state, constraints };
+      const next = {
+        ...state,
+        constraints,
+        planState: {
+          ...state.planState,
+          aiPlanNeedsRefresh: true,
+        },
+      };
       return { ...next, planState: buildRollingPlanForState(next) };
     }
     case 'REBUILD_ROLLING_PLAN':
@@ -3191,6 +3987,13 @@ function appReducer(state, action) {
       const scheduledDate = action.payload?.scheduledDate || null;
       const progressionIntent = action.payload?.progressionIntent || null;
       const maSessionSubtype = action.payload?.maSessionSubtype || null;
+      const plannerSource = action.payload?.plannerSource
+        || (AI_PRIMARY_PLAN_SOURCES.has(state.planState?.aiPlanSource) ? 'ai' : 'fallback_engine');
+      const aiPlanId = action.payload?.aiPlanId || state.planState?.aiPlan?.id || null;
+      const aiRationale = action.payload?.aiRationale || null;
+      const guardrailFixes = Array.isArray(action.payload?.guardrailFixes)
+        ? action.payload.guardrailFixes
+        : (Array.isArray(state.planState?.aiPlan?.guardrailFixes) ? state.planState.aiPlan.guardrailFixes : []);
       const activeSession = createSessionFromType(state, type, source, timeAvailable, {
         sessionVariant,
         reasonOverride,
@@ -3198,6 +4001,10 @@ function appReducer(state, action) {
         scheduledDate,
         progressionIntent,
         maSessionSubtype,
+        plannerSource,
+        aiPlanId,
+        aiRationale,
+        guardrailFixes,
       });
       return {
         ...state,
@@ -3268,12 +4075,24 @@ function appReducer(state, action) {
       if (!state.activeSession) return state;
       const { oldId, newEx } = action.payload || {};
       if (!oldId || !newEx) return state;
+      const oldExercise = (state.activeSession.exercises || []).find(ex => ex.id === oldId);
       const enriched = enrichPrescribedExercise(newEx, state, state.activeSession.prescription?.intensityTag || 'moderate');
       const exercises = state.activeSession.exercises.map(ex => ex.id === oldId ? enriched : ex);
       const exerciseResults = state.activeSession.exerciseResults.map(r =>
         r.exerciseId === oldId ? createExerciseResult(enriched) : r
       );
-      return { ...state, activeSession: { ...state.activeSession, exercises, exerciseResults } };
+      const manualEdits = [
+        ...(Array.isArray(state.activeSession.manualEdits) ? state.activeSession.manualEdits : []),
+        {
+          at: new Date().toISOString(),
+          kind: 'swap_exercise',
+          oldId,
+          oldName: oldExercise?.name || oldId,
+          newId: enriched.id,
+          newName: enriched.name,
+        },
+      ].slice(-30);
+      return { ...state, activeSession: { ...state.activeSession, exercises, exerciseResults, manualEdits } };
     }
     case 'SET_MA_SESSION_SUBTYPE': {
       if (!state.activeSession) return state;
@@ -3337,6 +4156,7 @@ function appReducer(state, action) {
           skipDebtScore: clamp(toNum(state.planState?.skipDebtScore, 0) + 1, 0, 30),
           consecutiveSkippedSlots: clamp(toNum(state.planState?.consecutiveSkippedSlots, 0) + 1, 0, 30),
           lastScheduleReplanAt: skippedAt,
+          aiPlanNeedsRefresh: true,
         },
       };
       return { ...next, planState: buildRollingPlanForState(next) };
@@ -3800,6 +4620,21 @@ function HomeView({ state, dispatch }) {
   const priorityList = useMemo(() => getPriorityTypes(balance, state), [balance, state]);
   const recentLogs = useMemo(() => [...state.sessionLogs].reverse().slice(0, 3), [state.sessionLogs]);
   const todayDateKey = getLocalDateKey(new Date());
+  const planningEnabled = isAIPlanningEnabled(state);
+  const aiPlanStatus = state.planState?.aiPlanStatus || 'idle';
+  const aiPlanSource = state.planState?.aiPlanSource || 'fallback_engine';
+  const planSourceLabel = getPlanSourceDisplayLabel(aiPlanSource);
+  const interviewRequired = (state.programConfig?.aiInterviewMode || 'daily_required') === 'daily_required';
+  const interview = state.planState?.aiInterview || null;
+  const interviewForToday = interview?.dateKey === todayDateKey ? interview : null;
+  const interviewCompletedToday = interviewRequired ? !!interviewForToday?.completedAt : true;
+  const aiPlanGeneratedAtMs = state.planState?.aiPlan?.generatedAt
+    ? Date.parse(state.planState.aiPlan.generatedAt)
+    : NaN;
+  const aiPlanFresh = Number.isFinite(aiPlanGeneratedAtMs)
+    && (Date.now() - aiPlanGeneratedAtMs) <= (AI_PLAN_FRESHNESS_HOURS * 60 * 60 * 1000);
+  const aiPlanHasToday = !!(state.planState?.aiPlan?.days || []).find(day => day?.date === todayDateKey);
+  const aiPlanNeedsRefresh = !!state.planState?.aiPlanNeedsRefresh || !aiPlanFresh || !aiPlanHasToday;
   const todaySlots = state.planState?.scheduledSlotsByDate?.[todayDateKey] || {};
   const martialNextPhase = state.planState?.martialArtsNextPhase || state.progression?.martialArts?.currentPhase || 'technical';
   const weekdayScheduleActive = (state.programConfig?.scheduleMode || 'weekday_fixed') === 'weekday_fixed' && isWeekdayDate(new Date());
@@ -3840,6 +4675,10 @@ function HomeView({ state, dispatch }) {
         progressionIntent: slot.progressionIntent || null,
         reasonOverride: slot.strictPrompt || `Scheduled ${slotKey} session.`,
         maSessionSubtype: slot.progressionIntent?.phaseTarget || null,
+        plannerSource: slot.source === 'ai_plan' ? 'ai' : 'fallback_engine',
+        aiPlanId: slot.aiPlanId || state.planState?.aiPlan?.id || null,
+        aiRationale: slot.aiRationale || null,
+        guardrailFixes: Array.isArray(state.planState?.aiPlan?.guardrailFixes) ? state.planState.aiPlan.guardrailFixes : [],
       },
     });
     dispatch({ type: 'SET_VIEW', payload: 'train' });
@@ -3883,6 +4722,96 @@ function HomeView({ state, dispatch }) {
         });
       });
   };
+
+  const submitDailyInterview = () => {
+    const questions = interviewForToday?.questions || [];
+    const answers = interviewForToday?.answers || {};
+    const hasAnyAnswer = questions.some(q => String(answers?.[q.id] || '').trim().length > 0);
+    if (!hasAnyAnswer) return;
+    dispatch({ type: 'SUBMIT_DAILY_AI_INTERVIEW' });
+  };
+
+  useEffect(() => {
+    if (!state.onboarded || !planningEnabled) return;
+    if (!state.aiConfig?.apiKey) return;
+    if (!interviewRequired) return;
+    if (interviewCompletedToday) return;
+    if (aiPlanStatus === 'interview' && interviewForToday) return;
+    dispatch({
+      type: 'START_DAILY_AI_INTERVIEW',
+      payload: { dateKey: todayDateKey, questions: createDailyInterviewQuestions(state, todayDateKey) },
+    });
+  }, [state.onboarded, planningEnabled, interviewRequired, todayDateKey, interviewCompletedToday, aiPlanStatus]);
+
+  useEffect(() => {
+    if (!state.onboarded || !planningEnabled) return;
+    if (!state.aiConfig?.apiKey) return;
+    if (!interviewCompletedToday) return;
+    if (!aiPlanNeedsRefresh) return;
+    if (aiPlanStatus === 'generating') return;
+
+    dispatch({ type: 'GENERATE_AI_PLAN' });
+    const goals = {
+      primaryGoalType: state.profile?.primaryGoalType,
+      secondaryGoals: state.profile?.secondaryGoals,
+      timelineWeeks: state.profile?.timelineWeeks,
+      priorityDomains: state.profile?.priorityDomains,
+      goalNotes: state.profile?.goalNotes,
+      mustAvoidTags: state.profile?.mustAvoidTags,
+    };
+    const interviewAnswers = interviewForToday?.answers || {};
+    callGeminiPlanningWithRetry({
+      apiKey: state.aiConfig.apiKey,
+      model: state.aiConfig?.planningModel || state.aiConfig?.model,
+      state,
+      goals,
+      interviewAnswers,
+    }).then(({ parsed }) => {
+      const validated = validateAIPlanSchema(parsed, state);
+      const guarded = applyPlanningGuardrails(validated, state);
+      const aiPlan = {
+        ...guarded.plan,
+        id: guarded.plan.id || `ai_plan_${Date.now()}`,
+        generatedAt: new Date().toISOString(),
+        guardrailFixes: guarded.guardrailFixes,
+      };
+      const scheduledSlotsByDate = mapAIPlanToScheduledSlots(aiPlan, {
+        ...state,
+        planState: {
+          ...state.planState,
+          aiPlan,
+          aiPlanSource: guarded.source,
+        },
+      });
+      dispatch({
+        type: 'SET_AI_PLAN',
+        payload: {
+          aiPlan,
+          source: guarded.source,
+          quality: guarded.source === 'ai_guardrail_corrected' ? 'guardrail_fixed' : 'valid',
+          scheduledSlotsByDate,
+        },
+      });
+    }).catch((err) => {
+      const status = Number(err?.status || 0);
+      const message = status === 429 || status === 503
+        ? `AI planning is temporarily unavailable (${status}). Fallback plan is active.`
+        : (err?.message || 'AI planning failed. Fallback plan is active.');
+      dispatch({ type: 'SET_AI_PLAN_ERROR', payload: { error: message } });
+    });
+  }, [
+    state.onboarded,
+    planningEnabled,
+    state.aiConfig?.apiKey,
+    state.aiConfig?.planningModel,
+    state.aiConfig?.model,
+    interviewCompletedToday,
+    aiPlanNeedsRefresh,
+    aiPlanStatus,
+    state.planState?.skipDebtScore,
+    state.planState?.consecutiveSkippedSlots,
+    state.profile?.sessionCount,
+  ]);
 
   // Weekly summary: generate when AI is enabled + week has rolled over or no summary exists
   useEffect(() => {
@@ -3981,6 +4910,48 @@ function HomeView({ state, dispatch }) {
           >
             SWITCH TO DELOAD
           </button>
+        </div>
+      )}
+      {state.onboarded && planningEnabled && !!state.aiConfig?.apiKey && interviewRequired && interviewForToday && !interviewCompletedToday && (
+        <div className="border border-yellow-700 bg-yellow-950/20 p-4 space-y-3">
+          <div className="text-yellow-400 font-mono text-xs uppercase tracking-widest font-bold">DAILY AI INTERVIEW (REQUIRED)</div>
+          <div className="text-neutral-400 font-mono text-xs">
+            Complete this once daily so AI can generate your refreshed {clamp(toNum(state.programConfig?.aiPlanHorizonDays, 7), 3, 7)}-day plan.
+          </div>
+          {(interviewForToday.questions || []).map((q) => (
+            <div key={q.id} className="space-y-1">
+              <div className="text-neutral-500 font-mono text-xs uppercase">{q.label}</div>
+              <div className="text-neutral-400 font-mono text-xs">{q.prompt}</div>
+              <textarea
+                value={interviewForToday?.answers?.[q.id] || ''}
+                onChange={(e) => dispatch({ type: 'UPDATE_AI_INTERVIEW_ANSWER', payload: { id: q.id, value: e.target.value } })}
+                placeholder={q.placeholder || ''}
+                rows={2}
+                className="w-full bg-neutral-900 border border-neutral-700 p-2 text-neutral-100 font-mono text-xs resize-none"
+              />
+            </div>
+          ))}
+          <button
+            onClick={submitDailyInterview}
+            className="w-full border border-yellow-500 py-2 font-mono text-xs uppercase text-yellow-400 font-bold active:bg-neutral-900"
+            style={{ WebkitTapHighlightColor: 'transparent' }}
+          >
+            SUBMIT INTERVIEW
+          </button>
+        </div>
+      )}
+      {state.onboarded && planningEnabled && (
+        <div className="border border-neutral-800 p-3 space-y-1">
+          <div className="flex items-center justify-between">
+            <div className="text-neutral-400 font-mono text-xs uppercase">Planner Source</div>
+            <div className={`font-mono text-xs uppercase ${AI_PRIMARY_PLAN_SOURCES.has(aiPlanSource) ? 'text-green-400' : 'text-orange-400'}`}>{planSourceLabel}</div>
+          </div>
+          {aiPlanStatus === 'generating' && (
+            <div className="text-neutral-500 font-mono text-xs animate-pulse">Generating AI plan...</div>
+          )}
+          {state.planState?.aiPlanLastError && (
+            <div className="text-orange-400 font-mono text-xs">{state.planState.aiPlanLastError}</div>
+          )}
         </div>
       )}
       <div className="border border-neutral-800 p-5">
@@ -4136,6 +5107,11 @@ function HomeView({ state, dispatch }) {
 
           <div className="border border-neutral-800 p-5 space-y-3">
             <div className="text-red-500 font-mono text-xs uppercase tracking-widest">TODAY'S PRESCRIPTION</div>
+            {state.onboarded && (
+              <div className={`font-mono text-[10px] uppercase ${AI_PRIMARY_PLAN_SOURCES.has(aiPlanSource) ? 'text-green-400' : 'text-orange-400'}`}>
+                {planSourceLabel}
+              </div>
+            )}
             <div className="text-neutral-400 font-mono text-xs">{state.planState.reasonText}</div>
             <div className="grid grid-cols-2 gap-3">
               <div
@@ -4377,6 +5353,7 @@ function TrainView({ state, dispatch }) {
   const martialNext = computeNextMartialPhase(state);
   const balance = useMemo(() => getSessionBalance(state.sessionLogs), [state.sessionLogs]);
   const priorityList = useMemo(() => getPriorityTypes(balance, state), [balance, state]);
+  const plannerSource = AI_PRIMARY_PLAN_SOURCES.has(state.planState?.aiPlanSource) ? 'ai' : 'fallback_engine';
   const recommendedTypes = useMemo(() => {
     const p = state.planState.primaryRecommendation?.type;
     const s = state.planState.secondaryRecommendation?.type;
@@ -4394,7 +5371,18 @@ function TrainView({ state, dispatch }) {
         rationale: suggestedPhase.rationale,
       });
     } else {
-      dispatch({ type: 'START_SESSION_FROM_PLAN', payload: { type, source, timeAvailable } });
+      dispatch({
+        type: 'START_SESSION_FROM_PLAN',
+        payload: {
+          type,
+          source,
+          timeAvailable,
+          plannerSource,
+          aiPlanId: state.planState?.aiPlan?.id || null,
+          aiRationale: state.planState?.reasonText || null,
+          guardrailFixes: Array.isArray(state.planState?.aiPlan?.guardrailFixes) ? state.planState.aiPlan.guardrailFixes : [],
+        },
+      });
     }
   };
 
@@ -4408,6 +5396,10 @@ function TrainView({ state, dispatch }) {
         progressionIntent: pendingMAType.progressionIntent || { domain: 'martialArts', phaseTarget: maSessionSubtype },
         maSessionSubtype,
         reasonOverride: `Martial progression target: ${String(maSessionSubtype).toUpperCase()}. Stay accountable and complete the session.`,
+        plannerSource,
+        aiPlanId: state.planState?.aiPlan?.id || null,
+        aiRationale: pendingMAType?.rationale || null,
+        guardrailFixes: Array.isArray(state.planState?.aiPlan?.guardrailFixes) ? state.planState.aiPlan.guardrailFixes : [],
       },
     });
     setPendingMAType(null);
@@ -4746,6 +5738,19 @@ function TrainView({ state, dispatch }) {
               TARGET RPE: {prescription.targetRPE || 7} · MODE: {prescription.intensityTag || 'moderate'} · {prescription.timeFit || 60}MIN
             </div>
             <div className="text-neutral-600 font-mono text-xs">{prescription.reasonText}</div>
+            {prescription.plannerSource && (
+              <div className={`font-mono text-[10px] uppercase ${prescription.plannerSource === 'ai' ? 'text-green-400' : 'text-orange-400'}`}>
+                PLANNER: {prescription.plannerSource === 'ai' ? 'AI PLAN' : 'FALLBACK ENGINE'}
+              </div>
+            )}
+            {prescription.aiRationale && (
+              <div className="text-neutral-500 font-mono text-xs">AI RATIONALE: {prescription.aiRationale}</div>
+            )}
+            {Array.isArray(prescription.guardrailFixes) && prescription.guardrailFixes.length > 0 && (
+              <div className="text-neutral-600 font-mono text-[10px]">
+                Guardrail fixes: {prescription.guardrailFixes.length}
+              </div>
+            )}
             {isScheduledSession && (
               <div className="text-neutral-500 font-mono text-xs">
                 SCHEDULED: {String(prescription.scheduledDate)} · {String(prescription.scheduledSlot).toUpperCase()}
@@ -5560,6 +6565,101 @@ function SettingsView({ state, dispatch }) {
         ))}
       </div>
 
+      <div className="border border-neutral-800 p-4 space-y-3">
+        <div className="text-red-500 font-mono text-sm uppercase tracking-widest">GOALS (AI PLANNER)</div>
+        <div className="space-y-1">
+          <label className="text-neutral-500 font-mono text-xs uppercase">Primary Goal Type</label>
+          <select
+            value={state.profile.primaryGoalType || 'performance'}
+            onChange={e => dispatch({ type: 'SET_PROFILE_FIELD', payload: { field: 'primaryGoalType', value: e.target.value } })}
+            className="w-full bg-neutral-900 border border-neutral-800 px-3 py-2 text-neutral-100 font-mono text-sm"
+          >
+            <option value="performance">Performance</option>
+            <option value="fat_loss">Fat Loss</option>
+            <option value="muscle_gain">Muscle Gain</option>
+            <option value="combat_competition">Combat Competition</option>
+            <option value="general_health">General Health</option>
+          </select>
+        </div>
+        <div className="space-y-1">
+          <label className="text-neutral-500 font-mono text-xs uppercase">Secondary Goals (comma separated)</label>
+          <input
+            type="text"
+            value={(state.profile.secondaryGoals || []).join(', ')}
+            onChange={e => dispatch({
+              type: 'SET_PROFILE_FIELD',
+              payload: {
+                field: 'secondaryGoals',
+                value: String(e.target.value || '')
+                  .split(',')
+                  .map(v => v.trim())
+                  .filter(Boolean),
+              },
+            })}
+            placeholder="e.g. stronger pull-ups, better mobility"
+            className="w-full bg-neutral-900 border border-neutral-800 px-3 py-2 text-neutral-100 font-mono text-sm"
+          />
+        </div>
+        <div className="space-y-1">
+          <label className="text-neutral-500 font-mono text-xs uppercase">Timeline (weeks)</label>
+          <input
+            type="number"
+            min="1"
+            max="52"
+            value={state.profile.timelineWeeks || 12}
+            onChange={e => dispatch({ type: 'SET_PROFILE_FIELD', payload: { field: 'timelineWeeks', value: clamp(toNum(e.target.value, 12), 1, 52) } })}
+            className="w-full bg-neutral-900 border border-neutral-800 px-3 py-2 text-neutral-100 font-mono text-sm"
+          />
+        </div>
+        <div className="space-y-1">
+          <label className="text-neutral-500 font-mono text-xs uppercase">Priority Domains (comma separated)</label>
+          <input
+            type="text"
+            value={(state.profile.priorityDomains || []).join(', ')}
+            onChange={e => dispatch({
+              type: 'SET_PROFILE_FIELD',
+              payload: {
+                field: 'priorityDomains',
+                value: String(e.target.value || '')
+                  .split(',')
+                  .map(v => v.trim().toLowerCase())
+                  .filter(Boolean),
+              },
+            })}
+            placeholder="strength, conditioning, mobility"
+            className="w-full bg-neutral-900 border border-neutral-800 px-3 py-2 text-neutral-100 font-mono text-sm"
+          />
+        </div>
+        <div className="space-y-1">
+          <label className="text-neutral-500 font-mono text-xs uppercase">Goal Notes</label>
+          <textarea
+            value={state.profile.goalNotes || ''}
+            onChange={e => dispatch({ type: 'SET_PROFILE_FIELD', payload: { field: 'goalNotes', value: e.target.value } })}
+            rows={3}
+            className="w-full bg-neutral-900 border border-neutral-800 px-3 py-2 text-neutral-100 font-mono text-sm resize-none"
+          />
+        </div>
+        <div className="space-y-1">
+          <label className="text-neutral-500 font-mono text-xs uppercase">Must Avoid Tags (comma separated)</label>
+          <input
+            type="text"
+            value={(state.profile.mustAvoidTags || []).join(', ')}
+            onChange={e => dispatch({
+              type: 'SET_PROFILE_FIELD',
+              payload: {
+                field: 'mustAvoidTags',
+                value: String(e.target.value || '')
+                  .split(',')
+                  .map(v => v.trim().toLowerCase())
+                  .filter(Boolean),
+              },
+            })}
+            placeholder="knee pain, overhead maxing"
+            className="w-full bg-neutral-900 border border-neutral-800 px-3 py-2 text-neutral-100 font-mono text-sm"
+          />
+        </div>
+      </div>
+
       {/* AI COACH */}
       <div className="space-y-3">
         <div className="text-red-500 font-mono text-sm font-bold uppercase tracking-widest">AI Coach</div>
@@ -5575,6 +6675,14 @@ function SettingsView({ state, dispatch }) {
 
         {state.aiConfig.enabled && (
           <>
+            <label className="flex items-center justify-between">
+              <span className="text-neutral-300 font-mono text-xs uppercase">Enable AI-First Planning</span>
+              <input
+                type="checkbox"
+                checked={!!state.aiConfig.planningEnabled}
+                onChange={e => dispatch({ type: 'UPDATE_AI_CONFIG', payload: { planningEnabled: e.target.checked } })}
+              />
+            </label>
             <div>
               <div className="text-neutral-500 font-mono text-xs uppercase mb-1">Gemini API Key</div>
               <input
@@ -5591,6 +6699,18 @@ function SettingsView({ state, dispatch }) {
               <select
                 value={state.aiConfig.model}
                 onChange={e => dispatch({ type: 'UPDATE_AI_CONFIG', payload: { model: e.target.value } })}
+                className="w-full bg-neutral-950 border border-neutral-700 px-3 py-2 text-neutral-100 font-mono text-sm"
+              >
+                <option value="gemini-3-flash-preview">gemini-3-flash-preview (default)</option>
+                <option value="gemini-2.5-flash">gemini-2.5-flash</option>
+                <option value="gemini-flash-latest">gemini-flash-latest</option>
+              </select>
+            </div>
+            <div>
+              <div className="text-neutral-500 font-mono text-xs uppercase mb-1">Planning Model</div>
+              <select
+                value={state.aiConfig.planningModel || state.aiConfig.model}
+                onChange={e => dispatch({ type: 'UPDATE_AI_CONFIG', payload: { planningModel: e.target.value } })}
                 className="w-full bg-neutral-950 border border-neutral-700 px-3 py-2 text-neutral-100 font-mono text-sm"
               >
                 <option value="gemini-3-flash-preview">gemini-3-flash-preview (default)</option>
@@ -5615,6 +6735,40 @@ function SettingsView({ state, dispatch }) {
             >
               <option value="weekday_fixed">WEEKDAY FIXED</option>
               <option value="manual">MANUAL</option>
+            </select>
+          </label>
+          <label className="flex items-center justify-between text-neutral-400 font-mono text-xs uppercase">
+            <span>Planning Mode</span>
+            <select
+              value={state.programConfig.planningMode || 'ai_primary_guardrailed'}
+              onChange={e => dispatch({ type: 'SET_PROGRAM_CONFIG', payload: { planningMode: e.target.value } })}
+              className="bg-neutral-950 border border-neutral-700 px-2 py-1 text-neutral-100 font-mono text-xs"
+            >
+              <option value="ai_primary_guardrailed">AI PRIMARY + GUARDRAILS</option>
+              <option value="deterministic_fallback">DETERMINISTIC ONLY</option>
+            </select>
+          </label>
+          <label className="flex items-center justify-between text-neutral-400 font-mono text-xs uppercase">
+            <span>Daily Interview</span>
+            <select
+              value={state.programConfig.aiInterviewMode || 'daily_required'}
+              onChange={e => dispatch({ type: 'SET_PROGRAM_CONFIG', payload: { aiInterviewMode: e.target.value } })}
+              className="bg-neutral-950 border border-neutral-700 px-2 py-1 text-neutral-100 font-mono text-xs"
+            >
+              <option value="daily_required">REQUIRED</option>
+              <option value="manual">MANUAL</option>
+            </select>
+          </label>
+          <label className="flex items-center justify-between text-neutral-400 font-mono text-xs uppercase">
+            <span>AI Horizon (days)</span>
+            <select
+              value={state.programConfig.aiPlanHorizonDays || 7}
+              onChange={e => dispatch({ type: 'SET_PROGRAM_CONFIG', payload: { aiPlanHorizonDays: clamp(toNum(e.target.value, 7), 3, 7) } })}
+              className="bg-neutral-950 border border-neutral-700 px-2 py-1 text-neutral-100 font-mono text-xs"
+            >
+              <option value={7}>7</option>
+              <option value={6}>6</option>
+              <option value={5}>5</option>
             </select>
           </label>
           <div className="grid grid-cols-2 gap-2">
@@ -5840,6 +6994,7 @@ function SettingsView({ state, dispatch }) {
         <div>Readiness: {state.readiness.score} ({state.readiness.band})</div>
         <div>Control score: {state.athleteModel.controlScore}</div>
         <div>Skip debt: {state.planState.skipDebtScore || 0} · Skipped streak: {state.planState.consecutiveSkippedSlots || 0}</div>
+        <div>Plan source: {getPlanSourceDisplayLabel(state.planState?.aiPlanSource || 'fallback_engine')} · Status: {state.planState?.aiPlanStatus || 'idle'}</div>
         <div>Martial next phase: {String(state.planState.martialArtsNextPhase || state.progression?.martialArts?.currentPhase || 'technical').toUpperCase()}</div>
         <div>Last adaptation: {state.progression.lastAdaptationSummary}</div>
       </div>
