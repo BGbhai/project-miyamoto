@@ -209,6 +209,13 @@ function slugify(value) {
 }
 
 function createProgramConfig() {
+  const timezone = (() => {
+    try {
+      return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+    } catch (err) {
+      return 'UTC';
+    }
+  })();
   return {
     mode: 'rolling',
     coachStyle: 'adaptive-flexible',
@@ -221,6 +228,11 @@ function createProgramConfig() {
     gymAnchorCount: 2,
     dailyVariationSeedMode: 'date_type',
     equipmentProfile: 'full_gym_bodyweight',
+    scheduleMode: 'weekday_fixed',
+    weekdayMorningTime: '07:30',
+    weekdayEveningTime: '19:00',
+    scheduleTimezone: timezone,
+    sessionGraceMinutes: 90,
     useWearable: false,
     featureFlags: {
       adaptiveEngine: true,
@@ -268,6 +280,16 @@ function createProgression() {
   return {
     exercises: {},
     skills: {},
+    martialArts: {
+      currentPhase: 'technical',
+      readinessScore: 50,
+      recentPhaseHistory: [],
+      completedByPhase: {
+        technical: 0,
+        conditioning: 0,
+        sparring: 0,
+      },
+    },
     stalledItems: [],
     highRPEStreak: 0,
     deloadRecommended: false,
@@ -399,12 +421,23 @@ function parseGeminiError(res, payload, requestType = 'Gemini request') {
   return err;
 }
 
-function createGeminiParseError(requestType = 'response', rawText = '') {
-  const err = new Error(`Gemini ${requestType} parse error: invalid JSON payload.`);
+function createGeminiParseError(requestType = 'response', rawText = '', failureType = 'invalid_json', source = 'primary') {
+  const baseMessage = failureType === 'blocked_or_empty'
+    ? `Gemini ${requestType} parse error: empty or blocked payload.`
+    : `Gemini ${requestType} parse error: invalid JSON payload.`;
+  const err = new Error(baseMessage);
   err.name = 'GeminiParseError';
   err.isGeminiParseError = true;
+  err.failureType = failureType;
+  err.source = source;
   err.rawTextSnippet = String(rawText || '').replace(/\s+/g, ' ').slice(0, 200);
   return err;
+}
+
+function fallbackModelForParse(selectedModel) {
+  const normalized = normalizeGeminiModel(selectedModel);
+  const ordered = [normalized, ...GEMINI_ALLOWED_MODELS.filter(model => model !== normalized)];
+  return ordered.find(model => model !== normalized) || null;
 }
 
 function extractGeminiText(payload) {
@@ -466,7 +499,7 @@ function extractFirstJSONObject(text) {
 
 function parseGeminiJson(text, requestType = 'response') {
   const clean = sanitizeGeminiText(text);
-  if (!clean) throw createGeminiParseError(requestType, text);
+  if (!clean) throw createGeminiParseError(requestType, text, 'blocked_or_empty');
 
   try {
     return JSON.parse(clean);
@@ -476,10 +509,10 @@ function parseGeminiJson(text, requestType = 'response') {
       try {
         return JSON.parse(extracted);
       } catch (secondErr) {
-        throw createGeminiParseError(requestType, clean);
+        throw createGeminiParseError(requestType, clean, 'invalid_json');
       }
     }
-    throw createGeminiParseError(requestType, clean);
+    throw createGeminiParseError(requestType, clean, 'invalid_json');
   }
 }
 
@@ -559,6 +592,11 @@ function assessCoachCompleteness(notes, workoutNames = []) {
   };
 }
 
+function validateCoachSchemaAndCoverage(normalized, workoutNames = []) {
+  const notes = normalized?.notes || normalized || {};
+  return assessCoachCompleteness(notes, workoutNames);
+}
+
 function synthesizeExerciseNotes(workout = [], seed = {}) {
   const merged = { ...(seed || {}) };
   const presetByPattern = {
@@ -606,7 +644,9 @@ function synthesizeExerciseNotes(workout = [], seed = {}) {
 }
 
 function normalizeCoachPayload(payload, workout = []) {
-  if (!payload || typeof payload !== 'object') throw createGeminiParseError('response', JSON.stringify(payload));
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw createGeminiParseError('response', JSON.stringify(payload), 'invalid_json');
+  }
 
   const workoutNames = (workout || []).map(ex => String(ex?.name || '').trim()).filter(Boolean);
   const asText = (value, fallback = '') => (typeof value === 'string' ? value.trim() : fallback);
@@ -646,17 +686,33 @@ function normalizeCoachPayload(payload, workout = []) {
     exercises,
   };
 
+  const coverage = validateCoachSchemaAndCoverage({ notes }, workoutNames);
   return {
     notes,
     workoutNames,
-    source: 'primary',
-    ...assessCoachCompleteness(notes, workoutNames),
+    ...coverage,
   };
 }
 
-function tryParseCoachPayload(text, workout = []) {
-  const parsed = parseGeminiJson(text, 'response');
-  return normalizeCoachPayload(parsed, workout);
+function tryParseCoachPayload(text, workout = [], source = 'primary') {
+  const clean = sanitizeGeminiText(text);
+  if (!clean) throw createGeminiParseError('response', text, 'blocked_or_empty', source);
+  const parsed = parseGeminiJson(clean, 'response');
+  return { ...normalizeCoachPayload(parsed, workout), source };
+}
+
+function chooseBestStructuredCoach(results = []) {
+  const filtered = (results || []).filter(Boolean);
+  if (!filtered.length) return null;
+  const qualityRank = { complete: 3, partial: 2, summary_only: 1 };
+  return filtered
+    .slice()
+    .sort((a, b) => {
+      const qa = qualityRank[a.quality] || 0;
+      const qb = qualityRank[b.quality] || 0;
+      if (qb !== qa) return qb - qa;
+      return (b.coverageCount || 0) - (a.coverageCount || 0);
+    })[0];
 }
 
 function buildCoachRepairBody(rawText, workoutNames = []) {
@@ -693,81 +749,185 @@ ${boundedRawText}`;
   };
 }
 
-async function callGeminiCoachWithRepair({ apiKey, endpoint, primaryBody, workout }) {
-  const primaryData = await callGeminiWithRetry({
+function repairCoachPayload(rawText, workoutNames = []) {
+  return buildCoachRepairBody(rawText, workoutNames);
+}
+
+async function runCoachAttempt({ apiKey, endpoint, body, requestType, workout, source }) {
+  const data = await callGeminiWithRetry({
+    apiKey,
+    endpoint,
+    body,
+    requestType,
+  });
+  const text = extractGeminiText(data);
+  try {
+    const result = tryParseCoachPayload(text, workout, source);
+    return { text, result, parseError: null };
+  } catch (err) {
+    if (!err?.isGeminiParseError) throw err;
+    err.source = source;
+    err.failureType = err.failureType || 'invalid_json';
+    return {
+      text,
+      result: null,
+      parseError: err,
+    };
+  }
+}
+
+async function callGeminiCoachWithRepair({ apiKey, endpoint, model, primaryBody, workout }) {
+  const workoutNames = (workout || []).map(ex => String(ex?.name || '').trim()).filter(Boolean);
+  const primaryAttempt = await runCoachAttempt({
     apiKey,
     endpoint,
     body: primaryBody,
     requestType: 'Session coaching',
+    workout,
+    source: 'primary',
   });
-  const primaryText = extractGeminiText(primaryData);
-  let primaryResult = null;
-  let primaryParseError = null;
-  try {
-    primaryResult = tryParseCoachPayload(primaryText, workout);
-  } catch (err) {
-    if (!err?.isGeminiParseError) throw err;
-    primaryParseError = err;
-  }
 
-  if (primaryResult && primaryResult.quality === 'complete') {
+  if (primaryAttempt.result && primaryAttempt.result.quality === 'complete') {
     return {
-      notes: primaryResult.notes,
+      notes: primaryAttempt.result.notes,
       warning: null,
-      quality: primaryResult.quality,
+      quality: primaryAttempt.result.quality,
       usedRepair: false,
+      usedModelFallback: false,
       source: 'primary',
     };
   }
 
-  const workoutNames = (workout || []).map(ex => String(ex?.name || '').trim()).filter(Boolean);
-  const repairBody = buildCoachRepairBody(primaryText, workoutNames);
-  const repairedData = await callGeminiWithRetry({
+  const repairBody = repairCoachPayload(primaryAttempt.text, workoutNames);
+  const repairAttempt = await runCoachAttempt({
     apiKey,
     endpoint,
     body: repairBody,
     requestType: 'Session coaching JSON repair',
+    workout,
+    source: 'repair',
   });
-  const repairedText = extractGeminiText(repairedData);
 
-  let repairedResult = null;
-  let repairedParseError = null;
-  try {
-    repairedResult = { ...tryParseCoachPayload(repairedText, workout), source: 'repair' };
-  } catch (err) {
-    if (!err?.isGeminiParseError) throw err;
-    repairedParseError = err;
-  }
-
-  if (repairedResult && repairedResult.quality === 'complete') {
+  if (repairAttempt.result && repairAttempt.result.quality === 'complete') {
     return {
-      notes: repairedResult.notes,
+      notes: repairAttempt.result.notes,
       warning: null,
-      quality: repairedResult.quality,
+      quality: repairAttempt.result.quality,
       usedRepair: true,
+      usedModelFallback: false,
       source: 'repair',
     };
   }
 
-  const bestStructured = repairedResult || primaryResult;
+  const structuredResults = [primaryAttempt.result, repairAttempt.result].filter(Boolean);
+  const parseFailures = [primaryAttempt.parseError, repairAttempt.parseError].filter(Boolean);
+  let bestStructured = chooseBestStructuredCoach(structuredResults);
+  let usedModelFallback = false;
+
+  const fallbackModel = fallbackModelForParse(model);
+  const shouldTryFallbackModel = !bestStructured && parseFailures.length > 0 && !!fallbackModel;
+  if (shouldTryFallbackModel) {
+    const fallbackAttempt = await runCoachAttempt({
+      apiKey,
+      endpoint: buildGeminiEndpoint(fallbackModel),
+      body: primaryBody,
+      requestType: `Session coaching (${fallbackModel})`,
+      workout,
+      source: 'model_fallback',
+    });
+    usedModelFallback = true;
+    if (fallbackAttempt.result) {
+      bestStructured = fallbackAttempt.result;
+    } else if (fallbackAttempt.parseError) {
+      parseFailures.push(fallbackAttempt.parseError);
+    }
+  }
+
   if (!bestStructured) {
-    throw repairedParseError || primaryParseError || createGeminiParseError('response', primaryText);
+    throw parseFailures[parseFailures.length - 1] || createGeminiParseError('response', primaryAttempt.text, 'invalid_json', 'primary');
+  }
+
+  if (bestStructured.quality === 'complete') {
+    return {
+      notes: bestStructured.notes,
+      warning: null,
+      quality: 'complete',
+      usedRepair: !!repairAttempt.result,
+      usedModelFallback,
+      source: bestStructured.source || (usedModelFallback ? 'model_fallback' : 'primary'),
+    };
   }
 
   const filledExercises = synthesizeExerciseNotes(workout, bestStructured.notes.exercises);
   const filledNotes = { ...bestStructured.notes, exercises: filledExercises };
-  const completeness = assessCoachCompleteness(filledNotes, bestStructured.workoutNames || workoutNames);
-  const warning = completeness.missingNames.length > 0 || bestStructured.quality !== 'complete'
-    ? 'AI returned partial exercise notes; missing cues were safely filled.'
-    : null;
+  const completeness = validateCoachSchemaAndCoverage({ notes: filledNotes }, bestStructured.workoutNames || workoutNames);
+  const warning = bestStructured.quality === 'summary_only'
+    ? 'AI returned summary-only coaching; exercise-specific cues were safely filled.'
+    : 'AI returned partial exercise notes; missing cues were safely filled.';
 
   return {
     notes: filledNotes,
     warning,
-    quality: completeness.quality,
-    usedRepair: !!repairedResult,
+    quality: completeness.quality || 'partial',
+    usedRepair: !!repairAttempt.result,
+    usedModelFallback,
     source: 'synthetic_fill',
   };
+}
+
+async function callGeminiCoachReliable(params) {
+  return callGeminiCoachWithRepair(params);
+}
+
+function buildExerciseQABody(question, userContext = {}, workout = []) {
+  const workoutList = (workout || []).length
+    ? workout.map((ex, idx) => `${idx + 1}. ${ex.name}`).join('\n')
+    : 'No active workout selected.';
+  const prompt = `You are a strict but supportive combat-athlete coach.
+Answer the user's exercise question in concise, actionable steps.
+If the user asks about skipping, reinforce accountability and provide the smallest next action to stay on plan.
+Keep answers practical and safe (avoid medical diagnosis).
+
+ATHLETE CONTEXT:
+- Session Type: ${userContext.sessionType || 'unknown'}
+- Martial Arts Next Phase: ${userContext.martialPhase || 'technical'}
+- Readiness: ${userContext.readinessScore || '?'} (${userContext.readinessBand || 'unknown'})
+- Skip Debt Score: ${userContext.skipDebtScore ?? 0}
+- Time Available: ${userContext.timeAvailable || '?'} min
+
+CURRENT WORKOUT:
+${workoutList}
+
+USER QUESTION:
+${String(question || '').slice(0, 1000)}
+
+Respond as plain text with:
+1) Direct answer
+2) What to do now (next 1-2 actions)
+3) One safety/technique watchout`;
+
+  return {
+    contents: [{ parts: [{ text: prompt }] }],
+    generationConfig: {
+      temperature: 0.2,
+      maxOutputTokens: 512,
+    },
+  };
+}
+
+async function callGeminiExerciseQA(apiKey, endpoint, question, userContext = {}, workout = []) {
+  const trimmedQuestion = String(question || '').trim();
+  if (!trimmedQuestion) throw new Error('Enter a question for AI coach.');
+  const body = buildExerciseQABody(trimmedQuestion, userContext, workout);
+  const data = await callGeminiWithRetry({
+    apiKey,
+    endpoint,
+    body,
+    requestType: 'Exercise Q&A',
+  });
+  const text = sanitizeGeminiText(extractGeminiText(data));
+  if (!text) throw new Error('Gemini returned an empty answer. Please retry.');
+  return text;
 }
 
 function buildFallbackCoachingNotes(workout, userContext = {}) {
@@ -783,8 +943,10 @@ function buildFallbackCoachingNotes(workout, userContext = {}) {
     };
   }
   return {
-    sessionFocus: `Prioritize crisp technique and consistent effort for this ${typeLabel} session.`,
-    watchOut: 'Scale load or complexity if form degrades or pain appears.',
+    sessionFocus: `Prioritize crisp technique and complete the planned work for this ${typeLabel} session.`,
+    watchOut: userContext.skipDebtScore > 0
+      ? 'No skip today. Scale intelligently if needed, but complete the session.'
+      : 'Scale load or complexity if form degrades or pain appears.',
     exercises,
   };
 }
@@ -843,6 +1005,12 @@ function createAIConfig() {
     coachingLoading: false,
     coachingError: null,
     coachingWarning: null,
+    lastCoachQuality: null,
+    lastCoachSource: null,
+    qaLoading: false,
+    qaError: null,
+    qaAnswer: '',
+    qaQuestion: '',
   };
 }
 
@@ -865,6 +1033,12 @@ function createPlanState() {
     weeklySummaryLastError: null,
     exerciseHistoryIndex: {},
     lastGeneratedAtByType: {},
+    scheduledSlotsByDate: {},
+    skipDebtScore: 0,
+    consecutiveSkippedSlots: 0,
+    lastScheduleReplanAt: null,
+    martialArtsNextPhase: 'technical',
+    martialArtsNextRationale: 'Rebuild technical consistency first.',
   };
 }
 
@@ -1451,8 +1625,13 @@ const INITIAL_STATE = createInitialState();
 // GEMINI API
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function callGeminiAPI(apiKey, endpoint, userContext, workout) {
-  const systemPrompt = `You are an elite personal trainer and coach with deep expertise in strength training, calisthenics, martial arts (Muay Thai, Boxing, BJJ, Wrestling), sports science, and human anatomy. You give concise, practical coaching advice tailored to the specific athlete.`;
+async function callGeminiAPI(apiKey, endpoint, model, userContext, workout) {
+  const systemPrompt = `You are an elite personal trainer and combat-sport coach.
+Be strict, direct, and actionable.
+- Never encourage skipping training.
+- If readiness is low, scale intelligently but still prescribe completion.
+- Keep output concise and specific to each exercise.
+- Return strict JSON only.`;
   const workoutNames = (workout || []).map(ex => String(ex?.name || '').trim()).filter(Boolean);
   const workoutCount = workoutNames.length;
   const workoutList = workoutCount > 0 ? workoutNames.map(name => `- ${name}`).join('\n') : '- none';
@@ -1466,6 +1645,8 @@ CURRENT BLOCK: ${userContext.currentBlock} (Target RPE: ${userContext.targetRPE}
 READINESS: ${userContext.readinessScore}/100 (${userContext.readinessBand}) — Sleep: ${userContext.sleep}/10, Stress: ${userContext.stress}/10
 PRIMARY GOAL: ${userContext.primaryGoal}
 SESSION TYPE: ${userContext.sessionType} — ${userContext.timeAvailable} minutes available
+SCHEDULE CONTEXT: ${userContext.scheduledDate || 'manual'} ${userContext.scheduledSlot || ''} (skip debt: ${userContext.skipDebtScore || 0})
+MARTIAL PHASE TARGET: ${userContext.martialPhase || 'technical'}
 MUSCLE RECOVERY: ${userContext.fatiguedMuscles.length > 0 ? 'Fatigued: ' + userContext.fatiguedMuscles.join(', ') : 'All muscles fresh'}
 RECENT SESSIONS (last 3): ${userContext.recentSessions}
 INJURIES: ${userContext.injuries}
@@ -1507,7 +1688,7 @@ ${countRule}
     },
   };
 
-  return callGeminiCoachWithRepair({ apiKey, endpoint, primaryBody: body, workout });
+  return callGeminiCoachReliable({ apiKey, endpoint, model, primaryBody: body, workout });
 }
 
 async function callGeminiWeeklySummary(apiKey, endpoint, weekContext) {
@@ -1603,6 +1784,144 @@ function getWeekStart(date = new Date()) {
   weekStart.setDate(date.getDate() - date.getDay());
   weekStart.setHours(0, 0, 0, 0);
   return weekStart;
+}
+
+function getLocalDateKey(date = new Date()) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function isWeekdayDate(date = new Date()) {
+  const day = date.getDay();
+  return day >= 1 && day <= 5;
+}
+
+function getSlotDueDate(dateKey, timeText = '07:30') {
+  const [year, month, day] = String(dateKey || '').split('-').map(Number);
+  const match = String(timeText || '').match(/^(\d{1,2}):([0-5]\d)$/);
+  const hours = match ? clamp(Number(match[1]), 0, 23) : 7;
+  const minutes = match ? Number(match[2]) : 30;
+  return new Date(year || 1970, (month || 1) - 1, day || 1, hours, minutes, 0, 0);
+}
+
+function getSkippedSlotTypeCounts(planState, lookbackDays = 14) {
+  const byType = {};
+  const cutoff = Date.now() - (lookbackDays * 24 * 60 * 60 * 1000);
+  const byDate = planState?.scheduledSlotsByDate || {};
+  for (const daySlots of Object.values(byDate)) {
+    for (const slot of ['morning', 'evening']) {
+      const entry = daySlots?.[slot];
+      if (!entry || entry.status !== 'skipped') continue;
+      const atMs = Date.parse(entry.skippedAt || entry.updatedAt || '');
+      if (Number.isFinite(atMs) && atMs < cutoff) continue;
+      const type = entry.type || 'gym';
+      byType[type] = (byType[type] || 0) + 1;
+    }
+  }
+  return byType;
+}
+
+function computeNextMartialPhase(state, options = {}) {
+  const martial = state.progression?.martialArts || createProgression().martialArts;
+  const completed = martial.completedByPhase || {};
+  const rawReadiness = toNum(options.baseReadiness, toNum(martial.readinessScore, 50));
+  const skipDebt = toNum(state.planState?.skipDebtScore, 0);
+  const skippedStreak = toNum(state.planState?.consecutiveSkippedSlots, 0);
+  const readinessScore = clamp(rawReadiness - (skipDebt * 4) - (skippedStreak * 6), 0, 100);
+
+  let phaseTarget = 'technical';
+  let rationale = 'Rebuild technical consistency first.';
+
+  if (readinessScore >= 70 && toNum(completed.technical, 0) >= 2 && toNum(completed.conditioning, 0) >= 2 && skippedStreak === 0) {
+    phaseTarget = 'sparring';
+    rationale = 'Readiness and consistency support live rounds progression.';
+  } else if (readinessScore >= 55 && toNum(completed.technical, 0) >= 2) {
+    phaseTarget = 'conditioning';
+    rationale = 'Technical base is stable; progress to conditioning rounds.';
+  }
+
+  return { phaseTarget, readinessScore, rationale };
+}
+
+function createScheduledSlot(type, dateKey, slot, timeText, state, ranked) {
+  const martialPhase = computeNextMartialPhase(state);
+  const progressionIntent = type === 'martialArts'
+    ? { domain: 'martialArts', phaseTarget: martialPhase.phaseTarget }
+    : { domain: getDomainFromType(type, null) || type };
+  const dueAt = getSlotDueDate(dateKey, timeText).toISOString();
+  const slotLabel = slot === 'morning' ? 'MORNING' : 'EVENING';
+  return {
+    type,
+    slot,
+    status: 'pending',
+    scheduledTime: timeText,
+    dueAt,
+    source: 'weekday_fixed',
+    progressionIntent,
+    strictPrompt: `Scheduled ${slotLabel} session. Skips increase accountability debt; complete this slot.`,
+    createdAt: new Date().toISOString(),
+    priorityHint: ranked.findIndex(item => item.type === type) + 1,
+  };
+}
+
+function applySkipDebtAndReplan(state, ranked) {
+  const now = new Date();
+  const cfg = state.programConfig || {};
+  const scheduleMode = cfg.scheduleMode || 'weekday_fixed';
+  const existing = state.planState?.scheduledSlotsByDate || {};
+  const scheduledSlotsByDate = { ...existing };
+
+  if (scheduleMode === 'weekday_fixed' && isWeekdayDate(now)) {
+    const dateKey = getLocalDateKey(now);
+    const dayExisting = scheduledSlotsByDate[dateKey] || {};
+    const primaryType = ranked[0]?.type || 'gym';
+    const secondaryType = ranked.find(item => item.type !== primaryType)?.type || primaryType;
+    scheduledSlotsByDate[dateKey] = {
+      morning: dayExisting.morning || createScheduledSlot(primaryType, dateKey, 'morning', cfg.weekdayMorningTime || '07:30', state, ranked),
+      evening: dayExisting.evening || createScheduledSlot(secondaryType, dateKey, 'evening', cfg.weekdayEveningTime || '19:00', state, ranked),
+    };
+  }
+
+  const skipDebtScore = clamp(toNum(state.planState?.skipDebtScore, 0), 0, 30);
+  const consecutiveSkippedSlots = clamp(toNum(state.planState?.consecutiveSkippedSlots, 0), 0, 30);
+  const strictWatchout = skipDebtScore > 0
+    ? `Accountability active: ${skipDebtScore} skipped slot${skipDebtScore === 1 ? '' : 's'} pending recovery. Complete your next scheduled slot.`
+    : null;
+
+  return {
+    scheduledSlotsByDate,
+    skipDebtScore,
+    consecutiveSkippedSlots,
+    lastScheduleReplanAt: new Date().toISOString(),
+    strictWatchout,
+  };
+}
+
+function markScheduledSlotCompleted(planState, prescription, completedAt, sessionType) {
+  const dateKey = prescription?.scheduledDate;
+  const slot = prescription?.scheduledSlot;
+  if (!dateKey || !slot) return planState;
+  const byDate = { ...(planState?.scheduledSlotsByDate || {}) };
+  const day = { ...(byDate[dateKey] || {}) };
+  const current = day[slot];
+  if (!current) return planState;
+  day[slot] = {
+    ...current,
+    status: 'completed',
+    completedAt,
+    completedSessionType: sessionType,
+    updatedAt: completedAt,
+  };
+  byDate[dateKey] = day;
+  return {
+    ...planState,
+    scheduledSlotsByDate: byDate,
+    skipDebtScore: Math.max(0, toNum(planState?.skipDebtScore, 0) - 1),
+    consecutiveSkippedSlots: 0,
+    lastScheduleReplanAt: completedAt,
+  };
 }
 
 function getSessionBalance(logs, now = new Date()) {
@@ -1886,7 +2205,7 @@ function buildSkillBandCandidates(state, blockedPatterns) {
   return candidates;
 }
 
-function generateWorkout(type, state, maSubtype, intensityTag = 'moderate', timeMinutes = 60, sessionVariant = null) {
+function generateWorkout(type, state, maSubtype, intensityTag = 'moderate', timeMinutes = 60, sessionVariant = null, options = {}) {
   const timeBase = timeMinutes <= 30 ? 2 : timeMinutes <= 45 ? 3 : timeMinutes <= 60 ? 5 : timeMinutes <= 75 ? 6 : 7;
   const coachStyle = state.programConfig?.coachStyle || 'adaptive-flexible';
   const styleAdjust = coachStyle === 'light-touch' ? -1 : 0;
@@ -1949,9 +2268,17 @@ function generateWorkout(type, state, maSubtype, intensityTag = 'moderate', time
     };
   } else if (type === 'martialArts') {
     const db = maSubtype === 'striking' ? EXERCISE_DB_V5.striking : EXERCISE_DB_V5.grappling;
+    const maSessionSubtype = options?.maSessionSubtype || options?.progressionIntent?.phaseTarget || 'technical';
+    const sortedBySubtype = [...db].sort((a, b) => {
+      const arpe = toNum(a.rpe || a.targetRPE, 6);
+      const brpe = toNum(b.rpe || b.targetRPE, 6);
+      if (maSessionSubtype === 'technical') return arpe - brpe;
+      if (maSessionSubtype === 'sparring') return brpe - arpe;
+      return Math.abs(7 - arpe) - Math.abs(7 - brpe);
+    });
     const safe = db.filter(ex => isExerciseSelectable(ex, state, blockedPatterns));
     const picked = pickRankedExercises(
-      safe.length ? safe : db,
+      safe.length ? sortedBySubtype.filter(ex => safe.some(s => s.id === ex.id)) : sortedBySubtype,
       Math.max(1, capExercises - 1),
       state,
       type,
@@ -1961,7 +2288,12 @@ function generateWorkout(type, state, maSubtype, intensityTag = 'moderate', time
       intensityTag
     );
     exercises = picked.selected;
-    selectionMeta.rationaleByExerciseId = picked.rationaleByExerciseId;
+    selectionMeta.rationaleByExerciseId = Object.fromEntries(
+      Object.entries(picked.rationaleByExerciseId).map(([id, rationale]) => ([
+        id,
+        `${rationale} · phase=${maSessionSubtype}`,
+      ]))
+    );
   } else if (type === 'running') {
     const safeRun = EXERCISE_DB_V5.running
       .filter(ex => isExerciseSelectable(ex, state, blockedPatterns))
@@ -2087,6 +2419,9 @@ function computeSessionPriority(type, state, balance, now = new Date()) {
   const fatiguePenalty = sameTypeStrain * 4 + Math.max(0, state.athleteModel.fatigueDebt - 20) * 0.3;
 
   const progressionUrgency = (state.progression.stalledItems || []).filter(item => item.type === type).length * 8;
+  const skippedTypeCounts = getSkippedSlotTypeCounts(state.planState, 14);
+  const skipDebtScore = toNum(state.planState?.skipDebtScore, 0);
+  const skippedUrgency = (toNum(skippedTypeCounts[type], 0) * 10) + (skipDebtScore > 0 ? 3 : 0);
   // Skill urgency: gym now includes calisthenics, so low-level skills boost gym priority
   const skillUrgency = type === 'gym'
     ? Object.values(state.domains.calisthenics.skills).reduce((acc, s) => acc + (s.level <= 2 ? 2 : 0), 0) * 2
@@ -2109,7 +2444,7 @@ function computeSessionPriority(type, state, balance, now = new Date()) {
     if (state.muscleRecovery?.quads?.status === 'fatigued' || state.muscleRecovery?.calves?.status === 'fatigued') musclePenalty += 15;
   }
 
-  const score = deficitNeed + progressionUrgency + skillUrgency + freshnessBonus - fatiguePenalty - constraintPenalty - musclePenalty;
+  const score = deficitNeed + progressionUrgency + skippedUrgency + skillUrgency + freshnessBonus - fatiguePenalty - constraintPenalty - musclePenalty;
   return { type, score, done, target, deficit: target - done };
 }
 
@@ -2119,18 +2454,21 @@ function buildRollingPlanForState(state) {
   const [primary, secondary] = ranked;
   const readiness = state.readiness;
   const timeFit = state.constraints.timeOverrideMinutes || state.programConfig.defaultSessionMinutes;
+  const schedulePatch = applySkipDebtAndReplan(state, ranked);
+  const martialNext = computeNextMartialPhase(state);
 
   const reasonText = primary
-    ? `${FREQUENCY_TARGETS[primary.type].label} selected: deficit ${primary.deficit > 0 ? primary.deficit : 0}, readiness ${readiness.score}, fatigue debt ${Math.round(state.athleteModel.fatigueDebt)}`
+    ? `${FREQUENCY_TARGETS[primary.type].label} selected: deficit ${primary.deficit > 0 ? primary.deficit : 0}, readiness ${readiness.score}, fatigue debt ${Math.round(state.athleteModel.fatigueDebt)}${schedulePatch.skipDebtScore > 0 ? `, skip debt ${schedulePatch.skipDebtScore}` : ''}`
     : 'No recommendation yet';
 
   const weeklyFocus = ranked.slice(0, 2).map(r => FREQUENCY_TARGETS[r.type].label).join(' + ');
-  const watchout =
+  const baseWatchout =
     state.athleteModel.fatigueDebt > 35
       ? 'Fatigue debt high: prioritize quality over intensity.'
       : readiness.band === 'low'
         ? 'Low readiness: use recovery-biased session variants.'
         : 'No major risk flags.';
+  const watchout = schedulePatch.strictWatchout || baseWatchout;
 
   return {
     generatedAt: new Date().toISOString(),
@@ -2150,6 +2488,12 @@ function buildRollingPlanForState(state) {
     weeklySummaryLastError: state.planState?.weeklySummaryLastError || null,
     exerciseHistoryIndex: state.planState?.exerciseHistoryIndex || {},
     lastGeneratedAtByType: state.planState?.lastGeneratedAtByType || {},
+    scheduledSlotsByDate: schedulePatch.scheduledSlotsByDate,
+    skipDebtScore: schedulePatch.skipDebtScore,
+    consecutiveSkippedSlots: schedulePatch.consecutiveSkippedSlots,
+    lastScheduleReplanAt: schedulePatch.lastScheduleReplanAt,
+    martialArtsNextPhase: martialNext.phaseTarget,
+    martialArtsNextRationale: martialNext.rationale,
     timeFit,
   };
 }
@@ -2201,11 +2545,24 @@ function createExerciseResult(ex) {
 function createSessionFromType(state, type, source = 'manual', timeMinutes = null, options = {}) {
   const sessionVariant = options?.sessionVariant || null;
   const reasonOverride = options?.reasonOverride || null;
+  const scheduledSlot = options?.scheduledSlot || null;
+  const scheduledDate = options?.scheduledDate || null;
+  const progressionIntent = options?.progressionIntent || null;
+  const martialProgression = computeNextMartialPhase(state);
+  const maSessionSubtype = type === 'martialArts'
+    ? (options?.maSessionSubtype || progressionIntent?.phaseTarget || martialProgression.phaseTarget || 'technical')
+    : null;
   const maSubtype = type === 'martialArts' ? getMartialArtsSubtype(state.sessionLogs) : null;
   const readinessBand = state.readiness.band || 'moderate';
-  const intensityTag = readinessBand === 'low' ? 'low' : readinessBand === 'high' ? 'high' : 'moderate';
+  let intensityTag = readinessBand === 'low' ? 'low' : readinessBand === 'high' ? 'high' : 'moderate';
+  if (scheduledSlot === 'morning' && intensityTag === 'high') intensityTag = 'moderate';
+  if (scheduledSlot === 'evening' && readinessBand !== 'low' && intensityTag === 'moderate') intensityTag = 'high';
   const actualTimeMinutes = timeMinutes || state.constraints.timeOverrideMinutes || state.programConfig.defaultSessionMinutes || 60;
-  const generated = generateWorkout(type, state, maSubtype, intensityTag, actualTimeMinutes, sessionVariant);
+  const generated = generateWorkout(type, state, maSubtype, intensityTag, actualTimeMinutes, sessionVariant, {
+    maSessionSubtype,
+    progressionIntent,
+    scheduledSlot,
+  });
   const exercises = (generated?.exercises || generated || []).filter(Boolean);
   const exerciseResults = exercises.map(createExerciseResult);
   const blockRPE = { accumulation:7, intensification:8, realization:9, deload:5 };
@@ -2216,6 +2573,7 @@ function createSessionFromType(state, type, source = 'manual', timeMinutes = nul
     id: `session_${Date.now()}`,
     type,
     maSubtype,
+    maSessionSubtype,
     exercises,
     exerciseResults,
     prescription: {
@@ -2223,9 +2581,12 @@ function createSessionFromType(state, type, source = 'manual', timeMinutes = nul
       sessionVariant,
       intensityTag,
       targetRPE,
-      reasonText: reasonOverride || state.planState.reasonText,
+      reasonText: reasonOverride || (scheduledSlot ? `Scheduled ${String(scheduledSlot).toUpperCase()} slot. Complete this session and protect progression.` : state.planState.reasonText),
       source,
       timeFit: actualTimeMinutes,
+      scheduledSlot,
+      scheduledDate,
+      progressionIntent: progressionIntent || (type === 'martialArts' ? { domain: 'martialArts', phaseTarget: maSessionSubtype } : null),
       selectionMeta: generated?.selectionMeta || null,
     },
     readinessSnapshot: {
@@ -2346,7 +2707,9 @@ function completeSessionInternal(state, payload = {}) {
     outcome: evaluateExerciseOutcome(r),
   }));
 
-  const { progression, adaptationApplied } = updateProgressionRecords(state, sessionType, exerciseResults, rpe);
+  const progressionUpdate = updateProgressionRecords(state, sessionType, exerciseResults, rpe);
+  let progression = progressionUpdate.progression;
+  let adaptationApplied = progressionUpdate.adaptationApplied;
   const completionQuality = computeCompletionQuality(rpe, recovery, exerciseResults, state.activeSession.prescription?.targetRPE);
   const newLog = {
     ...state.activeSession,
@@ -2367,6 +2730,47 @@ function completeSessionInternal(state, payload = {}) {
     newLog.exercises || [],
     newLog.completedAt
   );
+
+  if (sessionType === 'martialArts') {
+    const phaseDone = state.activeSession?.maSessionSubtype || 'technical';
+    const prevMA = progression.martialArts || createProgression().martialArts;
+    const completedByPhase = {
+      technical: toNum(prevMA.completedByPhase?.technical, 0),
+      conditioning: toNum(prevMA.completedByPhase?.conditioning, 0),
+      sparring: toNum(prevMA.completedByPhase?.sparring, 0),
+    };
+    if (phaseDone in completedByPhase) completedByPhase[phaseDone] += 1;
+    const readinessDelta = phaseDone === 'technical' ? 6 : phaseDone === 'conditioning' ? 4 : 2;
+    const adjustedReadiness = clamp(toNum(prevMA.readinessScore, 50) + readinessDelta - (rpe >= 9 ? 2 : 0), 0, 100);
+    const projectedState = {
+      ...state,
+      progression: { ...progression, martialArts: { ...prevMA, readinessScore: adjustedReadiness, completedByPhase } },
+      planState: {
+        ...state.planState,
+        skipDebtScore: Math.max(0, toNum(state.planState?.skipDebtScore, 0) - 1),
+        consecutiveSkippedSlots: 0,
+      },
+    };
+    const nextPhase = computeNextMartialPhase(projectedState, { baseReadiness: adjustedReadiness });
+    progression = {
+      ...progression,
+      martialArts: {
+        ...prevMA,
+        readinessScore: nextPhase.readinessScore,
+        currentPhase: nextPhase.phaseTarget,
+        completedByPhase,
+        recentPhaseHistory: [
+          ...(prevMA.recentPhaseHistory || []).slice(-39),
+          { at: newLog.completedAt, phase: phaseDone, rpe, quality: completionQuality },
+        ],
+      },
+    };
+    adaptationApplied = {
+      ...adaptationApplied,
+      nextFocus: `Martial progression: completed ${phaseDone.toUpperCase()} today. Next target: ${nextPhase.phaseTarget.toUpperCase()}.`,
+    };
+    newLog.adaptationApplied = adaptationApplied;
+  }
 
   const domainKeys = getDomainsFromType(sessionType, state.currentMASubtype);
   const newDomains = { ...state.domains };
@@ -2403,6 +2807,17 @@ function completeSessionInternal(state, payload = {}) {
   const sessionExercises = state.activeSession?.exercises || [];
   const newMuscleRecovery = updateMuscleRecovery(state.muscleRecovery, sessionExercises);
 
+  const basePlanState = {
+    ...state.planState,
+    exerciseHistoryIndex: updatedExerciseHistoryIndex,
+  };
+  const completedPlanState = markScheduledSlotCompleted(
+    basePlanState,
+    state.activeSession?.prescription,
+    newLog.completedAt,
+    sessionType
+  );
+
   const nextState = {
     ...state,
     sessionLogs: [...state.sessionLogs, newLog],
@@ -2414,10 +2829,7 @@ function completeSessionInternal(state, payload = {}) {
     domains: newDomains,
     progression,
     muscleRecovery: newMuscleRecovery,
-    planState: {
-      ...state.planState,
-      exerciseHistoryIndex: updatedExerciseHistoryIndex,
-    },
+    planState: completedPlanState,
     view: 'home',
   };
 
@@ -2462,7 +2874,14 @@ function migrateSessionLog(log, idx) {
     reasonText: 'Imported legacy session',
     timeFit: 60,
   };
-  const normalizedPrescription = { sessionVariant: null, selectionMeta: null, ...legacyPrescription };
+  const normalizedPrescription = {
+    sessionVariant: null,
+    selectionMeta: null,
+    scheduledSlot: null,
+    scheduledDate: null,
+    progressionIntent: null,
+    ...legacyPrescription,
+  };
   const exerciseMap = new Map();
   for (const ex of exercises) {
     exerciseMap.set(ex.id, ex);
@@ -2541,6 +2960,17 @@ function migrateState(raw) {
     progression: {
       ...base.progression,
       ...(raw.progression || {}),
+      martialArts: {
+        ...base.progression.martialArts,
+        ...(raw.progression?.martialArts || {}),
+        completedByPhase: {
+          ...base.progression.martialArts.completedByPhase,
+          ...(raw.progression?.martialArts?.completedByPhase || {}),
+        },
+        recentPhaseHistory: Array.isArray(raw.progression?.martialArts?.recentPhaseHistory)
+          ? raw.progression.martialArts.recentPhaseHistory.slice(-40)
+          : base.progression.martialArts.recentPhaseHistory,
+      },
       exercises: Object.fromEntries(
         Object.entries({ ...(base.progression.exercises), ...(raw.progression?.exercises || {}) }).map(([key, value]) => ([
           key,
@@ -2564,6 +2994,12 @@ function migrateState(raw) {
       weeklySummaryLastError: raw.planState?.weeklySummaryLastError || null,
       exerciseHistoryIndex: raw.planState?.exerciseHistoryIndex || {},
       lastGeneratedAtByType: raw.planState?.lastGeneratedAtByType || {},
+      scheduledSlotsByDate: raw.planState?.scheduledSlotsByDate || {},
+      skipDebtScore: toNum(raw.planState?.skipDebtScore, 0),
+      consecutiveSkippedSlots: toNum(raw.planState?.consecutiveSkippedSlots, 0),
+      lastScheduleReplanAt: raw.planState?.lastScheduleReplanAt || null,
+      martialArtsNextPhase: raw.planState?.martialArtsNextPhase || null,
+      martialArtsNextRationale: raw.planState?.martialArtsNextRationale || null,
     },
     domains: {
       ...base.domains,
@@ -2651,7 +3087,7 @@ function appReducer(state, action) {
       };
     }
     case 'SET_AI_COACHING': {
-      const { notes, loading, error, warning } = action.payload || {};
+      const { notes, loading, error, warning, quality, source } = action.payload || {};
       return {
         ...state,
         aiConfig: {
@@ -2660,6 +3096,21 @@ function appReducer(state, action) {
           coachingLoading: loading !== undefined ? loading : state.aiConfig.coachingLoading,
           coachingError: error !== undefined ? error : state.aiConfig.coachingError,
           coachingWarning: warning !== undefined ? warning : state.aiConfig.coachingWarning,
+          lastCoachQuality: quality !== undefined ? quality : state.aiConfig.lastCoachQuality,
+          lastCoachSource: source !== undefined ? source : state.aiConfig.lastCoachSource,
+        },
+      };
+    }
+    case 'SET_AI_QA': {
+      const { loading, error, answer, question } = action.payload || {};
+      return {
+        ...state,
+        aiConfig: {
+          ...state.aiConfig,
+          qaLoading: loading !== undefined ? loading : state.aiConfig.qaLoading,
+          qaError: error !== undefined ? error : state.aiConfig.qaError,
+          qaAnswer: answer !== undefined ? answer : state.aiConfig.qaAnswer,
+          qaQuestion: question !== undefined ? question : state.aiConfig.qaQuestion,
         },
       };
     }
@@ -2736,7 +3187,18 @@ function appReducer(state, action) {
       const timeAvailable = action.payload?.timeAvailable || null;
       const sessionVariant = action.payload?.sessionVariant || null;
       const reasonOverride = action.payload?.reasonOverride || null;
-      const activeSession = createSessionFromType(state, type, source, timeAvailable, { sessionVariant, reasonOverride });
+      const scheduledSlot = action.payload?.scheduledSlot || null;
+      const scheduledDate = action.payload?.scheduledDate || null;
+      const progressionIntent = action.payload?.progressionIntent || null;
+      const maSessionSubtype = action.payload?.maSessionSubtype || null;
+      const activeSession = createSessionFromType(state, type, source, timeAvailable, {
+        sessionVariant,
+        reasonOverride,
+        scheduledSlot,
+        scheduledDate,
+        progressionIntent,
+        maSessionSubtype,
+      });
       return {
         ...state,
         currentSessionType: type,
@@ -2749,7 +3211,19 @@ function appReducer(state, action) {
             [type === 'martialArts' ? `martialArts:${activeSession.maSubtype || 'mixed'}` : type]: activeSession.timestamp,
           },
         },
-        aiConfig: { ...state.aiConfig, coachingNotes: null, coachingLoading: false, coachingError: null, coachingWarning: null },
+        aiConfig: {
+          ...state.aiConfig,
+          coachingNotes: null,
+          coachingLoading: false,
+          coachingError: null,
+          coachingWarning: null,
+          lastCoachQuality: null,
+          lastCoachSource: null,
+          qaLoading: false,
+          qaError: null,
+          qaAnswer: '',
+          qaQuestion: '',
+        },
       };
     }
     case 'ACCEPT_ALTERNATE_SESSION': {
@@ -2804,6 +3278,68 @@ function appReducer(state, action) {
     case 'SET_MA_SESSION_SUBTYPE': {
       if (!state.activeSession) return state;
       return { ...state, activeSession: { ...state.activeSession, maSessionSubtype: action.payload } };
+    }
+    case 'SKIP_SCHEDULED_SLOT': {
+      const { dateKey, slot } = action.payload || {};
+      if (!dateKey || !slot) return state;
+      const byDate = { ...(state.planState?.scheduledSlotsByDate || {}) };
+      const day = { ...(byDate[dateKey] || {}) };
+      const current = day[slot];
+      if (!current || current.status !== 'pending') return state;
+      const skippedAt = new Date().toISOString();
+      day[slot] = { ...current, status: 'skipped', skippedAt, updatedAt: skippedAt };
+      byDate[dateKey] = day;
+
+      let progression = state.progression;
+      if (current.type === 'martialArts') {
+        const prevMA = state.progression?.martialArts || createProgression().martialArts;
+        const adjustedReadiness = clamp(toNum(prevMA.readinessScore, 50) - 8, 0, 100);
+        const projected = {
+          ...state,
+          planState: {
+            ...state.planState,
+            scheduledSlotsByDate: byDate,
+            skipDebtScore: toNum(state.planState?.skipDebtScore, 0) + 1,
+            consecutiveSkippedSlots: toNum(state.planState?.consecutiveSkippedSlots, 0) + 1,
+          },
+          progression: {
+            ...state.progression,
+            martialArts: { ...prevMA, readinessScore: adjustedReadiness },
+          },
+        };
+        const nextPhase = computeNextMartialPhase(projected, { baseReadiness: adjustedReadiness });
+        progression = {
+          ...state.progression,
+          martialArts: {
+            ...prevMA,
+            readinessScore: nextPhase.readinessScore,
+            currentPhase: nextPhase.phaseTarget,
+            recentPhaseHistory: [
+              ...(prevMA.recentPhaseHistory || []).slice(-39),
+              { at: skippedAt, phase: 'skip', quality: 0, rpe: 0 },
+            ],
+          },
+        };
+      }
+
+      const decisionLog = [
+        ...(state.decisionLog || []),
+        { at: skippedAt, type: 'scheduled_slot_skipped', slot, dateKey, sessionType: current.type },
+      ].slice(-120);
+
+      const next = {
+        ...state,
+        progression,
+        decisionLog,
+        planState: {
+          ...state.planState,
+          scheduledSlotsByDate: byDate,
+          skipDebtScore: clamp(toNum(state.planState?.skipDebtScore, 0) + 1, 0, 30),
+          consecutiveSkippedSlots: clamp(toNum(state.planState?.consecutiveSkippedSlots, 0) + 1, 0, 30),
+          lastScheduleReplanAt: skippedAt,
+        },
+      };
+      return { ...next, planState: buildRollingPlanForState(next) };
     }
     case 'CANCEL_SESSION':
       return { ...state, activeSession: null, currentSessionType: null, currentMASubtype: null };
@@ -3259,9 +3795,14 @@ function RoundTimer({ workSeconds = 180, restSeconds = 60 }) {
 
 function HomeView({ state, dispatch }) {
   const [microBreakMinutes, setMicroBreakMinutes] = useState(2);
+  const [qaInput, setQaInput] = useState('');
   const balance = useMemo(() => getSessionBalance(state.sessionLogs), [state.sessionLogs]);
   const priorityList = useMemo(() => getPriorityTypes(balance, state), [balance, state]);
   const recentLogs = useMemo(() => [...state.sessionLogs].reverse().slice(0, 3), [state.sessionLogs]);
+  const todayDateKey = getLocalDateKey(new Date());
+  const todaySlots = state.planState?.scheduledSlotsByDate?.[todayDateKey] || {};
+  const martialNextPhase = state.planState?.martialArtsNextPhase || state.progression?.martialArts?.currentPhase || 'technical';
+  const weekdayScheduleActive = (state.programConfig?.scheduleMode || 'weekday_fixed') === 'weekday_fixed' && isWeekdayDate(new Date());
   const weeklySummaryCooldownUntilMs = state.planState.weeklySummaryCooldownUntil
     ? Date.parse(state.planState.weeklySummaryCooldownUntil)
     : NaN;
@@ -3284,6 +3825,63 @@ function HomeView({ state, dispatch }) {
       },
     });
     dispatch({ type: 'SET_VIEW', payload: 'train' });
+  };
+  const startScheduledSlot = (slotKey) => {
+    const slot = todaySlots?.[slotKey];
+    if (!slot || slot.status !== 'pending') return;
+    dispatch({
+      type: 'START_SESSION_FROM_PLAN',
+      payload: {
+        type: slot.type,
+        source: 'scheduled-slot',
+        timeAvailable: state.programConfig?.defaultSessionMinutes || 60,
+        scheduledSlot: slotKey,
+        scheduledDate: todayDateKey,
+        progressionIntent: slot.progressionIntent || null,
+        reasonOverride: slot.strictPrompt || `Scheduled ${slotKey} session.`,
+        maSessionSubtype: slot.progressionIntent?.phaseTarget || null,
+      },
+    });
+    dispatch({ type: 'SET_VIEW', payload: 'train' });
+  };
+  const skipScheduledSlot = (slotKey) => {
+    dispatch({ type: 'SKIP_SCHEDULED_SLOT', payload: { dateKey: todayDateKey, slot: slotKey } });
+  };
+  const askCoachFromHome = () => {
+    if (!state.aiConfig?.enabled || !state.aiConfig?.apiKey) {
+      dispatch({
+        type: 'SET_AI_QA',
+        payload: { loading: false, error: 'Enable AI coach and add API key to ask questions.', answer: '' },
+      });
+      return;
+    }
+    const question = qaInput.trim();
+    if (!question) return;
+    dispatch({
+      type: 'SET_AI_QA',
+      payload: { loading: true, error: null, answer: '', question },
+    });
+    const context = {
+      sessionType: state.planState?.primaryRecommendation?.type || 'gym',
+      martialPhase: martialNextPhase,
+      readinessScore: state.readiness?.score,
+      readinessBand: state.readiness?.band,
+      skipDebtScore: state.planState?.skipDebtScore || 0,
+      timeAvailable: state.programConfig?.defaultSessionMinutes || 60,
+    };
+    callGeminiExerciseQA(state.aiConfig.apiKey, state.aiConfig.endpoint, question, context, [])
+      .then((answer) => {
+        dispatch({
+          type: 'SET_AI_QA',
+          payload: { loading: false, error: null, answer },
+        });
+      })
+      .catch((err) => {
+        dispatch({
+          type: 'SET_AI_QA',
+          payload: { loading: false, error: err?.message || 'AI Q&A failed.', answer: '' },
+        });
+      });
   };
 
   // Weekly summary: generate when AI is enabled + week has rolled over or no summary exists
@@ -3569,6 +4167,7 @@ function HomeView({ state, dispatch }) {
             <div className="border-l-2 border-neutral-700 pl-3 space-y-1">
               <div className="text-neutral-400 font-mono text-xs">FOCUS: {state.planState.weeklyFocus}</div>
               <div className="text-neutral-600 font-mono text-xs">WATCHOUT: {state.planState.watchout}</div>
+              <div className="text-neutral-500 font-mono text-xs">MARTIAL NEXT: {String(martialNextPhase).toUpperCase()} {state.planState?.martialArtsNextRationale ? `· ${state.planState.martialArtsNextRationale}` : ''}</div>
             </div>
           </div>
 
@@ -3599,6 +4198,98 @@ function HomeView({ state, dispatch }) {
                 </div>
               );
             })}
+          </div>
+
+          <div className="border border-neutral-800 p-5 space-y-3">
+            <div className="text-red-500 font-mono text-xs uppercase tracking-widest">SCHEDULED SLOTS (WEEKDAYS)</div>
+            {!weekdayScheduleActive && (
+              <div className="text-neutral-600 font-mono text-xs">Weekend mode: start sessions manually when ready.</div>
+            )}
+            {weekdayScheduleActive && ['morning', 'evening'].map((slotKey) => {
+              const slot = todaySlots?.[slotKey];
+              if (!slot) {
+                return (
+                  <div key={slotKey} className="text-neutral-600 font-mono text-xs">
+                    {slotKey.toUpperCase()}: not generated yet.
+                  </div>
+                );
+              }
+              const typeInfo = FREQUENCY_TARGETS[slot.type];
+              const phaseTag = slot.progressionIntent?.phaseTarget ? ` · ${String(slot.progressionIntent.phaseTarget).toUpperCase()}` : '';
+              const status = slot.status || 'pending';
+              const statusColor = status === 'completed' ? 'text-green-400' : status === 'skipped' ? 'text-red-500' : 'text-yellow-400';
+              return (
+                <div key={slotKey} className="border border-neutral-800 p-3 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="text-neutral-300 font-mono text-xs uppercase">
+                      {slotKey.toUpperCase()} {slot.scheduledTime ? `(${slot.scheduledTime})` : ''}
+                    </div>
+                    <div className={`font-mono text-xs uppercase ${statusColor}`}>{status}</div>
+                  </div>
+                  <div className="text-neutral-100 font-mono text-xs font-bold">
+                    {typeInfo ? `${typeInfo.icon} ${typeInfo.label}` : slot.type}{phaseTag}
+                  </div>
+                  {slot.status === 'pending' && (
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => startScheduledSlot(slotKey)}
+                        className="flex-1 border border-red-500 py-2 font-mono text-xs uppercase text-red-500 font-bold active:bg-neutral-900"
+                        style={{ WebkitTapHighlightColor: 'transparent' }}
+                      >
+                        START
+                      </button>
+                      <button
+                        onClick={() => skipScheduledSlot(slotKey)}
+                        className="flex-1 border border-neutral-700 py-2 font-mono text-xs uppercase text-neutral-400 active:bg-neutral-900"
+                        style={{ WebkitTapHighlightColor: 'transparent' }}
+                      >
+                        SKIP
+                      </button>
+                    </div>
+                  )}
+                  {slot.status === 'skipped' && (
+                    <div className="text-red-500 font-mono text-xs">
+                      Skipped slots add accountability debt and slow progression.
+                    </div>
+                  )}
+                  {slot.status === 'completed' && slot.completedAt && (
+                    <div className="text-green-500 font-mono text-xs">
+                      Completed: {new Date(slot.completedAt).toLocaleTimeString()}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="border border-neutral-800 p-5 space-y-3">
+            <div className="text-red-500 font-mono text-xs uppercase tracking-widest">ASK AI COACH</div>
+            <div className="text-neutral-500 font-mono text-xs">
+              Ask exercise/form/progression questions. Martial next phase: {String(martialNextPhase).toUpperCase()}.
+            </div>
+            <textarea
+              value={qaInput}
+              onChange={(e) => setQaInput(e.target.value)}
+              placeholder="Example: For tonight's martial slot, what should I focus on technically?"
+              className="w-full bg-neutral-900 border border-neutral-800 p-3 text-neutral-100 font-mono text-sm resize-none"
+              rows={3}
+            />
+            <button
+              onClick={askCoachFromHome}
+              disabled={state.aiConfig?.qaLoading || !qaInput.trim()}
+              className="w-full border border-red-500 py-3 font-mono text-xs uppercase text-red-500 font-bold disabled:opacity-40 active:bg-neutral-900"
+              style={{ WebkitTapHighlightColor: 'transparent' }}
+            >
+              {state.aiConfig?.qaLoading ? 'ASKING AI...' : 'ASK COACH'}
+            </button>
+            {state.aiConfig?.qaError && (
+              <div className="text-red-400 font-mono text-xs">{state.aiConfig.qaError}</div>
+            )}
+            {state.aiConfig?.qaAnswer && !state.aiConfig?.qaLoading && (
+              <div className="border-l-2 border-yellow-500 pl-3 text-neutral-200 font-mono text-xs whitespace-pre-wrap">
+                {state.aiConfig.qaAnswer}
+              </div>
+            )}
           </div>
 
           <div className="border border-neutral-800 p-5 space-y-3">
@@ -3678,10 +4369,12 @@ function TrainView({ state, dispatch }) {
   const [showOverrides, setShowOverrides] = useState(false);
   const [pendingMAType, setPendingMAType] = useState(null); // for sparring subtype picker
   const [maSessionSubtype, setMaSessionSubtype] = useState('technical');
+  const [qaInput, setQaInput] = useState('');
   const days = ['sun','mon','tue','wed','thu','fri','sat'];
   const todayKey = days[new Date().getDay()];
   const defaultTime = state.profile.timeByDay?.[todayKey] || 60;
   const [timeAvailable, setTimeAvailable] = useState(defaultTime);
+  const martialNext = computeNextMartialPhase(state);
   const balance = useMemo(() => getSessionBalance(state.sessionLogs), [state.sessionLogs]);
   const priorityList = useMemo(() => getPriorityTypes(balance, state), [balance, state]);
   const recommendedTypes = useMemo(() => {
@@ -3692,25 +4385,70 @@ function TrainView({ state, dispatch }) {
 
   const startSession = (type, source) => {
     if (type === 'martialArts') {
-      setPendingMAType({ type, source });
+      const suggestedPhase = computeNextMartialPhase(state);
+      setMaSessionSubtype(suggestedPhase.phaseTarget);
+      setPendingMAType({
+        type,
+        source,
+        progressionIntent: { domain: 'martialArts', phaseTarget: suggestedPhase.phaseTarget },
+        rationale: suggestedPhase.rationale,
+      });
     } else {
       dispatch({ type: 'START_SESSION_FROM_PLAN', payload: { type, source, timeAvailable } });
     }
   };
 
   const confirmMASession = () => {
-    dispatch({ type: 'START_SESSION_FROM_PLAN', payload: { type: pendingMAType.type, source: pendingMAType.source, timeAvailable } });
-    // Store subtype after session starts (handled via SET_MA_SESSION_SUBTYPE once activeSession exists)
-    // We use a small trick: dispatch after a tick
-    setTimeout(() => dispatch({ type: 'SET_MA_SESSION_SUBTYPE', payload: maSessionSubtype }), 0);
+    dispatch({
+      type: 'START_SESSION_FROM_PLAN',
+      payload: {
+        type: pendingMAType.type,
+        source: pendingMAType.source,
+        timeAvailable,
+        progressionIntent: pendingMAType.progressionIntent || { domain: 'martialArts', phaseTarget: maSessionSubtype },
+        maSessionSubtype,
+        reasonOverride: `Martial progression target: ${String(maSessionSubtype).toUpperCase()}. Stay accountable and complete the session.`,
+      },
+    });
     setPendingMAType(null);
+  };
+
+  const askCoachFromTrain = () => {
+    if (!state.aiConfig?.enabled || !state.aiConfig?.apiKey) {
+      dispatch({ type: 'SET_AI_QA', payload: { loading: false, error: 'Enable AI coach and add API key in Settings.', answer: '' } });
+      return;
+    }
+    const question = qaInput.trim();
+    if (!question) return;
+    dispatch({ type: 'SET_AI_QA', payload: { loading: true, error: null, answer: '', question } });
+    const context = {
+      sessionType: state.currentSessionType || 'gym',
+      martialPhase: state.activeSession?.maSessionSubtype || martialNext.phaseTarget,
+      readinessScore: state.readiness?.score,
+      readinessBand: state.readiness?.band,
+      skipDebtScore: state.planState?.skipDebtScore || 0,
+      timeAvailable: state.activeSession?.prescription?.timeFit || timeAvailable,
+      scheduledSlot: state.activeSession?.prescription?.scheduledSlot || null,
+      scheduledDate: state.activeSession?.prescription?.scheduledDate || null,
+    };
+    callGeminiExerciseQA(
+      state.aiConfig.apiKey,
+      state.aiConfig.endpoint,
+      question,
+      context,
+      state.activeSession?.exercises || []
+    ).then((answer) => {
+      dispatch({ type: 'SET_AI_QA', payload: { loading: false, error: null, answer } });
+    }).catch((err) => {
+      dispatch({ type: 'SET_AI_QA', payload: { loading: false, error: err?.message || 'AI Q&A failed.', answer: '' } });
+    });
   };
 
   // AI Coaching trigger
   useEffect(() => {
     if (!state.activeSession || !state.aiConfig.enabled || !state.aiConfig.apiKey) return;
     if (state.aiConfig.coachingLoading || state.aiConfig.coachingNotes) return;
-    dispatch({ type: 'SET_AI_COACHING', payload: { loading: true, error: null, warning: null } });
+    dispatch({ type: 'SET_AI_COACHING', payload: { loading: true, error: null, warning: null, quality: null, source: null } });
     const userContext = {
       name: state.profile.name || 'Athlete',
       age: state.profile.age || '?',
@@ -3724,6 +4462,10 @@ function TrainView({ state, dispatch }) {
       primaryGoal: state.profile.primaryGoal || 'complete athlete',
       sessionType: state.currentSessionType,
       timeAvailable: state.activeSession?.prescription?.timeFit || 60,
+      scheduledSlot: state.activeSession?.prescription?.scheduledSlot || null,
+      scheduledDate: state.activeSession?.prescription?.scheduledDate || null,
+      skipDebtScore: state.planState?.skipDebtScore || 0,
+      martialPhase: state.activeSession?.maSessionSubtype || martialNext.phaseTarget,
       fatiguedMuscles: getMuscleRecoveryAdvice(state.muscleRecovery).fatiguedMuscles,
       recentSessions: (state.sessionLogs || []).slice(-3).map(l => `${l.type} RPE${l.rpe}`).join(', ') || 'none',
       injuries: Object.entries(state.constraints?.injuries || {}).filter(([,v]) => v).map(([k]) => k).join(', ') || 'none',
@@ -3734,6 +4476,7 @@ function TrainView({ state, dispatch }) {
     callGeminiAPI(
       state.aiConfig.apiKey,
       state.aiConfig.endpoint,
+      state.aiConfig.model,
       userContext,
       state.activeSession.exercises || []
     ).then(result => {
@@ -3744,23 +4487,33 @@ function TrainView({ state, dispatch }) {
           loading: false,
           error: null,
           warning: result?.warning || null,
+          quality: result?.quality || 'complete',
+          source: result?.source || 'primary',
         },
       });
     }).catch(err => {
       if (err?.isGeminiParseError) {
         const fallbackNotes = buildFallbackCoachingNotes(state.activeSession.exercises || [], userContext);
+        const warning = err?.failureType === 'blocked_or_empty'
+          ? 'AI returned empty/blocked payload on all attempts. Showing safe fallback cues for this session.'
+          : 'AI returned malformed JSON on all attempts. Showing safe fallback cues for this session.';
         dispatch({
           type: 'SET_AI_COACHING',
           payload: {
             notes: fallbackNotes,
             loading: false,
             error: null,
-            warning: 'AI returned malformed JSON on both attempts. Showing safe fallback cues for this session.',
+            warning,
+            quality: 'invalid_json',
+            source: 'synthetic_fill',
           },
         });
         return;
       }
-      dispatch({ type: 'SET_AI_COACHING', payload: { error: err.message, loading: false, warning: null } });
+      dispatch({
+        type: 'SET_AI_COACHING',
+        payload: { error: err.message, loading: false, warning: null, quality: null, source: null },
+      });
     });
   }, [state.activeSession?.id]);
 
@@ -3776,6 +4529,12 @@ function TrainView({ state, dispatch }) {
             </button>
             <div className="text-red-500 font-mono text-lg uppercase tracking-widest font-bold">MARTIAL ARTS SESSION TYPE</div>
             <div className="text-neutral-500 font-mono text-xs mt-1">{state.currentMASubtype ? `— ${state.currentMASubtype.toUpperCase()}` : ''}</div>
+            <div className="text-neutral-400 font-mono text-xs mt-2">
+              Next progression target: {String(pendingMAType?.progressionIntent?.phaseTarget || martialNext.phaseTarget).toUpperCase()}
+            </div>
+            {pendingMAType?.rationale && (
+              <div className="text-neutral-600 font-mono text-xs mt-1">{pendingMAType.rationale}</div>
+            )}
           </div>
           <div className="space-y-2">
             {MA_SESSION_SUBTYPES.map(opt => (
@@ -3788,6 +4547,9 @@ function TrainView({ state, dispatch }) {
                 <div className="flex items-center gap-2">
                   <div className={`w-2 h-2 rounded-full flex-shrink-0 ${maSessionSubtype === opt.value ? 'bg-red-500' : 'bg-neutral-700'}`} />
                   <span className={`text-sm uppercase font-bold ${maSessionSubtype === opt.value ? 'text-neutral-100' : 'text-neutral-400'}`}>{opt.label}</span>
+                  {(pendingMAType?.progressionIntent?.phaseTarget === opt.value) && (
+                    <span className="border border-yellow-600 text-yellow-500 font-mono text-[10px] px-1.5 py-0.5 uppercase">RECOMMENDED</span>
+                  )}
                 </div>
                 <div className="text-neutral-600 text-xs mt-1 pl-4">{opt.desc}</div>
               </button>
@@ -3809,6 +4571,9 @@ function TrainView({ state, dispatch }) {
         <div className="border border-neutral-800 p-4">
           <div className="text-red-500 font-mono text-lg uppercase tracking-widest font-bold">COACHED SESSION PICKER</div>
           <div className="text-neutral-500 font-mono text-xs mt-1">{state.planState.reasonText}</div>
+          <div className="text-neutral-400 font-mono text-xs mt-2">
+            Martial next focus: {String(martialNext.phaseTarget).toUpperCase()} · {martialNext.rationale}
+          </div>
         </div>
 
         {/* Time picker */}
@@ -3923,6 +4688,7 @@ function TrainView({ state, dispatch }) {
   ].filter(Boolean).join(' · ');
   const subtypeDisplay = subtypeLabel ? ` — ${subtypeLabel}` : '';
   const prescription = state.activeSession.prescription || {};
+  const isScheduledSession = !!(prescription.scheduledDate && prescription.scheduledSlot);
   const isMicroBreakSession = state.currentSessionType === 'mobility'
     && (prescription.sessionVariant === 'micro-break' || prescription.source === 'micro-break');
   const resultsById = Object.fromEntries((state.activeSession.exerciseResults || []).map(r => [r.exerciseId, r]));
@@ -3931,8 +4697,12 @@ function TrainView({ state, dispatch }) {
     <div className="space-y-4">
       {cancelConfirm && (
         <div className="border-2 border-red-500 p-4 space-y-3 bg-neutral-950">
-          <div className="text-red-500 font-mono text-xs uppercase tracking-widest">CANCEL SESSION?</div>
-          <div className="text-neutral-400 font-mono text-xs">This session will be discarded. Progress lost.</div>
+          <div className="text-red-500 font-mono text-xs uppercase tracking-widest">{isScheduledSession ? 'SKIP SCHEDULED SESSION?' : 'CANCEL SESSION?'}</div>
+          <div className="text-neutral-400 font-mono text-xs">
+            {isScheduledSession
+              ? 'Skipping this scheduled slot increases accountability debt and can delay progression.'
+              : 'This session will be discarded. Progress lost.'}
+          </div>
           <div className="flex gap-2">
             <button
               onClick={() => setCancelConfirm(false)}
@@ -3941,10 +4711,19 @@ function TrainView({ state, dispatch }) {
               KEEP GOING
             </button>
             <button
-              onClick={() => { setCancelConfirm(false); dispatch({ type: 'CANCEL_SESSION' }); }}
+              onClick={() => {
+                setCancelConfirm(false);
+                if (isScheduledSession) {
+                  dispatch({
+                    type: 'SKIP_SCHEDULED_SLOT',
+                    payload: { dateKey: prescription.scheduledDate, slot: prescription.scheduledSlot },
+                  });
+                }
+                dispatch({ type: 'CANCEL_SESSION' });
+              }}
               className="flex-1 bg-red-500 text-neutral-950 py-3 font-mono text-sm uppercase font-bold active:bg-red-700"
             >
-              CANCEL IT
+              {isScheduledSession ? 'SKIP IT' : 'CANCEL IT'}
             </button>
           </div>
         </div>
@@ -3967,6 +4746,11 @@ function TrainView({ state, dispatch }) {
               TARGET RPE: {prescription.targetRPE || 7} · MODE: {prescription.intensityTag || 'moderate'} · {prescription.timeFit || 60}MIN
             </div>
             <div className="text-neutral-600 font-mono text-xs">{prescription.reasonText}</div>
+            {isScheduledSession && (
+              <div className="text-neutral-500 font-mono text-xs">
+                SCHEDULED: {String(prescription.scheduledDate)} · {String(prescription.scheduledSlot).toUpperCase()}
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -3986,10 +4770,44 @@ function TrainView({ state, dispatch }) {
           {state.aiConfig.coachingNotes && !state.aiConfig.coachingLoading && (
             <div className="space-y-1">
               <div className="text-yellow-400 font-mono text-xs font-bold uppercase">⚡ COACH</div>
+              {(state.aiConfig.lastCoachSource || state.aiConfig.lastCoachQuality) && (
+                <div className="text-neutral-600 font-mono text-[10px] uppercase">
+                  SOURCE: {state.aiConfig.lastCoachSource || 'primary'} · QUALITY: {state.aiConfig.lastCoachQuality || 'complete'}
+                </div>
+              )}
               <div className="text-neutral-100 font-mono text-xs">{state.aiConfig.coachingNotes.sessionFocus}</div>
               {state.aiConfig.coachingNotes.watchOut && (
                 <div className="text-orange-400 font-mono text-xs">⚠ {state.aiConfig.coachingNotes.watchOut}</div>
               )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {state.aiConfig.enabled && (
+        <div className="mb-4 p-3 border border-neutral-700 bg-neutral-900 space-y-2">
+          <div className="text-yellow-400 font-mono text-xs uppercase font-bold">ASK COACH (LIVE)</div>
+          <textarea
+            value={qaInput}
+            onChange={(e) => setQaInput(e.target.value)}
+            placeholder="Ask about any exercise, setup, form cue, or what to prioritize next."
+            className="w-full bg-neutral-950 border border-neutral-800 p-2 text-neutral-100 font-mono text-xs resize-none"
+            rows={3}
+          />
+          <button
+            onClick={askCoachFromTrain}
+            disabled={state.aiConfig?.qaLoading || !qaInput.trim()}
+            className="w-full border border-red-500 py-2 font-mono text-xs uppercase text-red-500 font-bold disabled:opacity-40 active:bg-neutral-900"
+            style={{ WebkitTapHighlightColor: 'transparent' }}
+          >
+            {state.aiConfig?.qaLoading ? 'ASKING AI...' : 'ASK NOW'}
+          </button>
+          {state.aiConfig?.qaError && (
+            <div className="text-red-400 font-mono text-xs">{state.aiConfig.qaError}</div>
+          )}
+          {state.aiConfig?.qaAnswer && !state.aiConfig?.qaLoading && (
+            <div className="border-l-2 border-yellow-500 pl-2 text-neutral-200 font-mono text-xs whitespace-pre-wrap">
+              {state.aiConfig.qaAnswer}
             </div>
           )}
         </div>
@@ -4787,6 +5605,52 @@ function SettingsView({ state, dispatch }) {
       {/* SCHEDULE */}
       <div className="space-y-3">
         <div className="text-red-500 font-mono text-sm font-bold uppercase tracking-widest">Weekly Schedule</div>
+        <div className="grid grid-cols-1 gap-2">
+          <label className="flex items-center justify-between text-neutral-400 font-mono text-xs uppercase">
+            <span>Mode</span>
+            <select
+              value={state.programConfig.scheduleMode || 'weekday_fixed'}
+              onChange={e => dispatch({ type: 'SET_PROGRAM_CONFIG', payload: { scheduleMode: e.target.value } })}
+              className="bg-neutral-950 border border-neutral-700 px-2 py-1 text-neutral-100 font-mono text-xs"
+            >
+              <option value="weekday_fixed">WEEKDAY FIXED</option>
+              <option value="manual">MANUAL</option>
+            </select>
+          </label>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <div className="text-neutral-500 font-mono text-xs uppercase mb-1">Weekday Morning</div>
+              <input
+                type="time"
+                value={state.programConfig.weekdayMorningTime || '07:30'}
+                onChange={e => dispatch({ type: 'SET_PROGRAM_CONFIG', payload: { weekdayMorningTime: e.target.value } })}
+                className="w-full bg-neutral-950 border border-neutral-700 px-2 py-2 text-neutral-100 font-mono text-xs"
+              />
+            </div>
+            <div>
+              <div className="text-neutral-500 font-mono text-xs uppercase mb-1">Weekday Evening</div>
+              <input
+                type="time"
+                value={state.programConfig.weekdayEveningTime || '19:00'}
+                onChange={e => dispatch({ type: 'SET_PROGRAM_CONFIG', payload: { weekdayEveningTime: e.target.value } })}
+                className="w-full bg-neutral-950 border border-neutral-700 px-2 py-2 text-neutral-100 font-mono text-xs"
+              />
+            </div>
+          </div>
+          <div>
+            <div className="text-neutral-500 font-mono text-xs uppercase mb-1">Session Grace (minutes)</div>
+            <input
+              type="number"
+              min="15"
+              max="240"
+              step="15"
+              value={state.programConfig.sessionGraceMinutes || 90}
+              onChange={e => dispatch({ type: 'SET_PROGRAM_CONFIG', payload: { sessionGraceMinutes: clamp(toNum(e.target.value, 90), 15, 240) } })}
+              className="w-full bg-neutral-950 border border-neutral-700 px-3 py-2 text-neutral-100 font-mono text-xs"
+            />
+            <div className="text-neutral-600 font-mono text-xs mt-1">Timezone: {state.programConfig.scheduleTimezone || 'UTC'}</div>
+          </div>
+        </div>
         <div className="text-neutral-500 font-mono text-xs">Minutes available per day</div>
         <div className="grid grid-cols-7 gap-1">
           {['mon','tue','wed','thu','fri','sat','sun'].map(day => (
@@ -4975,6 +5839,8 @@ function SettingsView({ state, dispatch }) {
         <div>Block: {state.profile.currentBlock} · Wk {state.profile.blockWeek}</div>
         <div>Readiness: {state.readiness.score} ({state.readiness.band})</div>
         <div>Control score: {state.athleteModel.controlScore}</div>
+        <div>Skip debt: {state.planState.skipDebtScore || 0} · Skipped streak: {state.planState.consecutiveSkippedSlots || 0}</div>
+        <div>Martial next phase: {String(state.planState.martialArtsNextPhase || state.progression?.martialArts?.currentPhase || 'technical').toUpperCase()}</div>
         <div>Last adaptation: {state.progression.lastAdaptationSummary}</div>
       </div>
     </div>
