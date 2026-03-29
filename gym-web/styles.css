@@ -285,6 +285,68 @@ main {
   align-items: start;
 }
 
+.skill-grid {
+  display: grid;
+  gap: 1rem;
+}
+
+.skill-band {
+  border-radius: var(--radius);
+  border: 1px solid rgba(16, 35, 29, 0.1);
+  background:
+    linear-gradient(180deg, rgba(255, 250, 242, 0.92), rgba(248, 240, 228, 0.86));
+  padding: 1rem;
+  box-shadow: 0 10px 28px rgba(16, 35, 29, 0.06);
+}
+
+.skill-kicker {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.skill-band h3 {
+  margin: 0.5rem 0 0;
+  font-family: "Sora", sans-serif;
+  font-size: 1.35rem;
+  line-height: 1.05;
+  letter-spacing: -0.04em;
+}
+
+.skill-band p {
+  margin: 0.75rem 0 0;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.skill-milestones {
+  list-style: none;
+  padding: 0;
+  margin: 0.95rem 0 0;
+  display: grid;
+  gap: 0.55rem;
+}
+
+.skill-milestones li {
+  position: relative;
+  padding-left: 1.1rem;
+  line-height: 1.55;
+}
+
+.skill-milestones li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.68rem;
+  width: 0.42rem;
+  height: 0.42rem;
+  border-radius: 50%;
+  background: var(--green);
+}
+
 .input-strip,
 .formula-list,
 .day-detail,
@@ -561,6 +623,10 @@ details[open] summary::after {
   .target-lab,
   .day-summary {
     grid-template-columns: 1.1fr 0.9fr;
+  }
+
+  .skill-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .hero-grid > :first-child,

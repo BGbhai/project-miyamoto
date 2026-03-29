@@ -225,6 +225,38 @@ const renderDaySection = (day) => `
   </section>
 `;
 
+const renderSkillTracks = (tracks) => `
+  <section class="section-shell" id="skill-tracks">
+    <div class="shell section-grid">
+      <div>
+        <p class="section-kicker">Skill Tracks</p>
+        <h2 class="section-title">Train the ladder, not a fantasy list.</h2>
+        <p class="section-copy">
+          "All the skills" is a long-term goal, not a weekly task list. The smart version is to
+          move four tracks forward together: pushing and balance, pulling power, core and
+          compression, and lower-body control.
+        </p>
+      </div>
+      <div class="skill-grid">
+        ${tracks
+          .map(
+            (track) => `
+          <article class="skill-band">
+            <p class="skill-kicker">${track.horizon}</p>
+            <h3>${track.title}</h3>
+            <p>${track.currentFocus}</p>
+            <ul class="skill-milestones">
+              ${track.milestones.map((item) => `<li>${item}</li>`).join("")}
+            </ul>
+          </article>
+        `,
+          )
+          .join("")}
+      </div>
+    </div>
+  </section>
+`;
+
 const renderAlternatives = (groups) => `
   <section class="section-shell" id="alternatives">
     <div class="shell section-grid">
@@ -367,6 +399,7 @@ const mount = (data, maxes) => {
     renderDayRail(data.days),
     "<main>",
     renderTargetLab(data, maxes),
+    renderSkillTracks(data.skillTracks),
     data.days.map(renderDaySection).join(""),
     renderAlternatives(data.alternatives),
     renderSources(data.sources),

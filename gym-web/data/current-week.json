@@ -2,12 +2,12 @@
   "brand": {
     "kicker": "Project Miyamoto / Weekly Training Board",
     "title": "Built for the week you actually run.",
-    "copy": "A mobile-first workout board for the current week: morning gym, evening mobility, daily bodyweight practice kept submax, and Sunday locked as full recovery."
+    "copy": "A mobile-first workout board for the current week: morning gym, evening mobility, daily bodyweight practice kept submax, a visible calisthenics skill ladder, and Sunday locked as full recovery."
   },
   "week": {
     "label": "Mar 30 - Apr 5, 2026",
     "phase": "Re-entry / Week 1",
-    "focus": "Reset consistency. Build rhythm. Finish the week wanting more, not less.",
+    "focus": "Reset consistency, rebuild joint tolerance, and start moving the calisthenics skill ladder in a sustainable way.",
     "rhythm": "Monday run-only, Tuesday to Saturday work, Sunday full rest.",
     "automation": "Refreshes Sundays at 3:00 PM",
     "updatedAtLabel": "Mar 30, 2026 at 2:40 AM IST",
@@ -39,6 +39,48 @@
       "key": "squat",
       "label": "Bodyweight squat",
       "formula": "60% of current technical max"
+    }
+  ],
+  "skillTracks": [
+    {
+      "title": "Push + balance",
+      "horizon": "Wall line -> handstand -> handstand push-up",
+      "currentFocus": "Build shoulder line, wrist tolerance, and overhead stacking before chasing freestanding handstands.",
+      "milestones": [
+        "Scap push-ups and pike push-ups stay clean",
+        "Wall handstand hold 20-30s with ribs down",
+        "Box or elevated pike press strength improves week to week"
+      ]
+    },
+    {
+      "title": "Pull + lever strength",
+      "horizon": "Chest-to-bar -> muscle-up / tuck lever -> front lever",
+      "currentFocus": "Own scap depression, chest-to-bar intent, and hollow pulling before explosive skill attempts.",
+      "milestones": [
+        "Pull-ups stay crisp without elbow irritation",
+        "Scap pull-ups and chest-to-bar intent become stronger",
+        "Tuck front lever or skin-the-cat prep can be added later without chaos"
+      ]
+    },
+    {
+      "title": "Core + compression",
+      "horizon": "Hollow hold -> L-sit -> V-sit / press work",
+      "currentFocus": "Train hollow body, compression, and hip flexor control so every other skill gets easier.",
+      "milestones": [
+        "Hollow body hold stays solid for 20-30s",
+        "Hanging knee raise becomes strict and controlled",
+        "Compression work starts feeling like skill practice, not random ab work"
+      ]
+    },
+    {
+      "title": "Leg control",
+      "horizon": "Split squat -> pistol progression -> clean pistol squat",
+      "currentFocus": "Keep lower-body skill work honest with ankle mobility, single-leg control, and squat pattern quality.",
+      "milestones": [
+        "Assisted pistol pattern feels balanced",
+        "Deep squat position gets more comfortable",
+        "Single-leg strength supports eventual pistol and jump control work"
+      ]
     }
   ],
   "days": [
