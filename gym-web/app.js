@@ -131,8 +131,8 @@ const renderTargetLab = (data, maxes) => `
         <h2 class="section-title">Set your maxes once, then stop guessing.</h2>
         <p class="section-copy">
           This week is programmed at ${Math.round(data.week.targetIntensity * 100)}% of your
-          current technical max. Keep 1-2 reps in reserve on most days and treat Sunday as a
-          full reset.
+          current technical max. The board below already blends muscle density, skill work,
+          speed, agility, and mobility, so your job is to hit the targets and follow the day.
         </p>
         <div class="input-strip">
           <div class="input-grid">
@@ -177,6 +177,15 @@ const renderTargetLab = (data, maxes) => `
   </section>
 `;
 
+const renderBuildChips = (builds = []) =>
+  builds.length
+    ? `
+      <div class="build-chip-row" aria-label="Training qualities">
+        ${builds.map((item) => `<span class="build-chip">${item}</span>`).join("")}
+      </div>
+    `
+    : "";
+
 const renderDaySection = (day) => `
   <section class="section-shell day-section" id="${day.slug}">
     <div class="shell section-grid">
@@ -189,6 +198,7 @@ const renderDaySection = (day) => `
             ? `<span class="status-chip">${day.status}</span>`
             : ""
         }
+        ${renderBuildChips(day.builds)}
       </div>
       <div class="day-summary">
         <article class="day-detail">
@@ -201,7 +211,16 @@ const renderDaySection = (day) => `
           }
         </article>
         <article class="day-detail">
-          <h3>Daily bodyweight</h3>
+          <h3>${day.skill.label}</h3>
+          ${day.skill.copy ? `<p>${day.skill.copy}</p>` : ""}
+          ${
+            day.skill.bullets?.length
+              ? `<ul>${day.skill.bullets.map((item) => `<li>${item}</li>`).join("")}</ul>`
+              : ""
+          }
+        </article>
+        <article class="day-detail">
+          <h3>Daily calisthenics</h3>
           <p>${day.bodyweight}</p>
           ${
             day.note ? `<p class="day-note">${day.note}</p>` : ""

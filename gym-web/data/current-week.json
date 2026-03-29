@@ -1,16 +1,16 @@
 {
   "brand": {
     "kicker": "Project Miyamoto / Weekly Training Board",
-    "title": "Built for the week you actually run.",
-    "copy": "A mobile-first workout board for the current week: morning gym, evening mobility, daily bodyweight practice kept submax, a visible calisthenics skill ladder, and Sunday locked as full recovery."
+    "title": "Follow the board. Build the stack.",
+    "copy": "A mobile-first weekly board that already blends morning gym work, calisthenics skill practice, speed and agility, and evening mobility so you can just follow the day and keep moving forward."
   },
   "week": {
     "label": "Mar 30 - Apr 5, 2026",
     "phase": "Re-entry / Week 1",
-    "focus": "Reset consistency, rebuild joint tolerance, and start moving the calisthenics skill ladder in a sustainable way.",
+    "focus": "Rebuild consistency with an integrated week that trains muscle density, calisthenics progressions, speed, agility, mobility, and flexibility without forcing you to improvise.",
     "rhythm": "Monday run-only, Tuesday to Saturday work, Sunday full rest.",
     "automation": "Refreshes Sundays at 3:00 PM",
-    "updatedAtLabel": "Mar 30, 2026 at 2:40 AM IST",
+    "updatedAtLabel": "Mar 30, 2026 at 3:10 AM IST",
     "targetIntensity": 0.6,
     "pullUpSecondSetRatio": 0.8
   },
@@ -91,9 +91,18 @@
       "title": "Run-only ramp-in",
       "summary": "Keep the first day easy. The point is to restart rhythm, not prove conditioning.",
       "status": "Starter day",
+      "builds": [
+        "Aerobic reset",
+        "Running rhythm",
+        "Recovery"
+      ],
       "morning": {
         "label": "Morning / no gym",
         "copy": "No lifting today. Save your legs for an easy evening run."
+      },
+      "skill": {
+        "label": "Skill block / none",
+        "copy": "No formal calisthenics skill work today. The skill win is showing up, keeping the run easy, and starting the week without digging a fatigue hole."
       },
       "bodyweight": "Skip the daily bodyweight block today.",
       "note": "If the run feels rough, turn it into a run-walk: 2 min easy run / 1 min walk.",
@@ -118,6 +127,11 @@
       "day": "Tuesday",
       "title": "Lower strength + power",
       "summary": "First real gym day. Keep your bar speed clean and leave a rep or two in reserve.",
+      "builds": [
+        "Muscle density",
+        "Leg control",
+        "Ankle mobility"
+      ],
       "morning": {
         "label": "Morning / gym",
         "bullets": [
@@ -128,7 +142,16 @@
           "Hanging leg raise 3x10-12"
         ]
       },
-      "bodyweight": "Run the full daily bodyweight target block after the main session.",
+      "skill": {
+        "label": "Skill block / pistol pattern",
+        "copy": "This is your lower-body skill slot. Keep it honest, balanced, and controlled instead of turning it into another leg burner.",
+        "bullets": [
+          "Assisted pistol to box 3x4 per side",
+          "Split-squat bottom hold 2x20s per side",
+          "Cossack squat 2x6 per side"
+        ]
+      },
+      "bodyweight": "After the skill block, run the full daily target block: 1 set push-ups, 1 set dips, 2 sets pull-ups, and 1 set bodyweight squats.",
       "note": "Keep the squat set smooth. Stop the set when speed and shape start to fall apart.",
       "evening": {
         "label": "Evening / lower mobility",
@@ -152,6 +175,11 @@
       "day": "Wednesday",
       "title": "Upper strength + control",
       "summary": "This day should feel precise, not frantic. Quality pressing and pulling beats random volume.",
+      "builds": [
+        "Upper density",
+        "Push balance",
+        "Shoulder control"
+      ],
       "morning": {
         "label": "Morning / gym",
         "bullets": [
@@ -162,7 +190,16 @@
           "Face pull 2x15"
         ]
       },
-      "bodyweight": "Use the weekly targets. If dips irritate your shoulders, switch to assisted or substitute.",
+      "skill": {
+        "label": "Skill block / handstand line",
+        "copy": "Treat this as shoulder stacking practice, not circus work. Clean positions matter more than time.",
+        "bullets": [
+          "Wall-facing handstand hold 4x20-30s",
+          "Box pike press 3x5",
+          "Scap push-up 2x10"
+        ]
+      },
+      "bodyweight": "Use the weekly targets after the skill block. If dips irritate your shoulders, switch to assisted or substitute.",
       "note": "Daily pull-ups stay submax. Save your elbows for consistency.",
       "evening": {
         "label": "Evening / upper mobility",
@@ -186,6 +223,11 @@
       "day": "Thursday",
       "title": "Athletic full body",
       "summary": "This is the fast day. Sharp reps, crisp movement, and no grinding.",
+      "builds": [
+        "Speed",
+        "Agility",
+        "Pulling skill"
+      ],
       "morning": {
         "label": "Morning / gym",
         "bullets": [
@@ -197,7 +239,16 @@
           "Bike or sled intervals 6 rounds"
         ]
       },
-      "bodyweight": "Keep the bodyweight block tidy and technical after the session.",
+      "skill": {
+        "label": "Skill block / explosive pull",
+        "copy": "This is where you start bridging strict pulling into future chest-to-bar and muscle-up capacity without trashing your elbows.",
+        "bullets": [
+          "Scap pull-up 2x6",
+          "Chest-to-bar intent pull-up 4x3",
+          "False-grip or active hang 3x15-20s"
+        ]
+      },
+      "bodyweight": "Keep the daily calisthenics block tidy and technical after the skill work.",
       "note": "If your nervous system feels flat, reduce the intervals before cutting the whole day.",
       "evening": {
         "label": "Evening / full-body flow",
@@ -221,6 +272,11 @@
       "day": "Friday",
       "title": "Recovery / zone 2",
       "summary": "Keep the pace easy. The point is to stay moving without stacking fatigue.",
+      "builds": [
+        "Aerobic base",
+        "Core compression",
+        "Flexibility"
+      ],
       "morning": {
         "label": "Morning / recovery",
         "bullets": [
@@ -229,7 +285,16 @@
           "Cut the daily bodyweight work to 80% of target if elbows or shoulders feel cooked"
         ]
       },
-      "bodyweight": "Run the daily block only if it still feels smooth. Recovery wins here.",
+      "skill": {
+        "label": "Skill block / compression",
+        "copy": "This is the quiet skill day. The work should leave you looser and stronger, not fried.",
+        "bullets": [
+          "Hollow body hold 3x20-30s",
+          "Tuck L-sit or support hold 4x10-15s",
+          "Seated pike compression lift 2x8"
+        ]
+      },
+      "bodyweight": "Run the daily block only if it still feels smooth. Recovery wins here, so assisted versions are fine.",
       "note": "This is the easiest morning of the week on purpose.",
       "evening": {
         "label": "Evening / long reset",
@@ -253,6 +318,11 @@
       "day": "Saturday",
       "title": "Posterior chain + agility",
       "summary": "Last working day of the week. Stay athletic, then shut it down cleanly.",
+      "builds": [
+        "Posterior power",
+        "Reactive agility",
+        "Integrated skill"
+      ],
       "morning": {
         "label": "Morning / gym",
         "bullets": [
@@ -264,7 +334,16 @@
           "Copenhagen plank 3x20-30s"
         ]
       },
-      "bodyweight": "Use the normal daily target block. No heroics before rest day.",
+      "skill": {
+        "label": "Skill block / weekly integration",
+        "copy": "Use a lighter mixed block here so every skill ladder gets touched once more before the rest day.",
+        "bullets": [
+          "Wall-facing handstand hold 2x20s",
+          "Hanging knee raise or tuck raise 2x8",
+          "Assisted pistol 2x3 per side"
+        ]
+      },
+      "bodyweight": "Use the normal daily target block after the skill block. No heroics before rest day.",
       "note": "Saturday should finish sharp enough that Sunday can be full rest, not forced repair.",
       "evening": {
         "label": "Evening / lower mobility",
@@ -289,9 +368,17 @@
       "title": "Full rest day",
       "summary": "No training. No catch-up session. Let the system reset so the next week starts clean.",
       "status": "Rest locked",
+      "builds": [
+        "Recovery",
+        "Adaptation"
+      ],
       "morning": {
         "label": "Morning / off",
         "copy": "No gym. Walk if you want, but the day is for recovery."
+      },
+      "skill": {
+        "label": "Skill block / off",
+        "copy": "Rest is part of the skill plan. You get better at the hard things by showing up fresh enough to practice them well next week."
       },
       "bodyweight": "Rest from the daily bodyweight work today.",
       "note": "A short easy walk is fine. Turning Sunday into a stealth training day is not.",

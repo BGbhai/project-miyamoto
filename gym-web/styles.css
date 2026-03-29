@@ -463,6 +463,24 @@ details summary:focus-visible {
   margin-bottom: 1rem;
 }
 
+.build-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.build-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.45rem 0.7rem;
+  border-radius: 999px;
+  border: 1px solid rgba(16, 35, 29, 0.12);
+  background: rgba(255, 250, 242, 0.86);
+  color: var(--text);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
 .day-date {
   font-size: 0.78rem;
   font-weight: 700;
