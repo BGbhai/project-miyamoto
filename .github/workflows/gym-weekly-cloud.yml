@@ -1,0 +1,49 @@
+name: Gym Weekly Cloud
+
+on:
+  schedule:
+    - cron: "30 15 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gym-weekly-cloud
+  cancel-in-progress: true
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    env:
+      GYM_GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GYM_GOOGLE_SERVICE_ACCOUNT_JSON }}
+      GYM_SHEET_ID: ${{ vars.GYM_SHEET_ID }}
+      GYM_SHEET_TAB: ${{ vars.GYM_SHEET_TAB }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install requirements
+        run: pip install -r requirements-gym-automation.txt
+
+      - name: Run weekly planner
+        run: python scripts/gym_cloud_scheduler.py --mode weekly --repo-root .
+
+      - name: Commit changes
+        run: |
+          if git diff --quiet -- gym-web/data/current-week.json; then
+            echo "No JSON changes to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add gym-web/data/current-week.json
+          git commit -m "Weekly gym cloud update"
+          git push
