@@ -458,7 +458,9 @@ const rerenderTargets = (data, maxes) => {
 };
 
 const init = async () => {
-  const response = await fetch("./data/current-week.json");
+  const response = await fetch(`./data/current-week.json?v=${Date.now()}`, {
+    cache: "no-store",
+  });
   const data = await response.json();
   const maxes = loadMaxes();
 
