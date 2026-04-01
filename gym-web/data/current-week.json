@@ -7,10 +7,10 @@
   "week": {
     "label": "Mar 30 - Apr 5, 2026",
     "phase": "Re-entry / Week 1",
-    "focus": "Midweek pivot: Monday run is logged done, Tuesday is unlogged and counts as missed, so the rest of this week now runs morning mobility and evening gym without trying to cram everything back in.",
+    "focus": "Midweek pivot: Monday run is logged done, Tuesday was missed, and Wednesday morning mobility was also missed, so the rest of this week stays recoverable instead of trying to force a perfect catch-up.",
     "rhythm": "Wednesday to Saturday: morning stretches at home, evening gym, Sunday full rest.",
     "automation": "Refreshes Sundays at 3:00 PM",
-    "updatedAtLabel": "Apr 1, 2026 at 9:06 AM IST",
+    "updatedAtLabel": "Apr 1, 2026 at 9:20 AM IST",
     "targetIntensity": 0.6,
     "pullUpSecondSetRatio": 0.8
   },
@@ -187,7 +187,7 @@
       "date": "2026-04-01",
       "day": "Wednesday",
       "title": "Upper strength + control / evening gym",
-      "summary": "The schedule flips here: morning is mobility, evening is gym. Keep tonight precise and a touch conservative after the missed Tuesday.",
+      "summary": "The schedule flips here: morning is mobility, evening is gym. Since Tuesday and Wednesday morning were both missed, tonight stays lighter and cleaner than originally planned.",
       "builds": [
         "Upper density",
         "Push balance",
@@ -205,22 +205,23 @@
       },
       "skill": {
         "label": "Skill block / handstand line",
-        "copy": "Treat this as shoulder stacking practice, not circus work. Clean positions matter more than time.",
+        "copy": "Treat this as shoulder stacking practice, not circus work. Because the morning prep was missed, reduce the total volume slightly and make every rep look clean.",
         "bullets": [
-          "Wall-facing handstand hold 4x20-30s",
-          "Box pike press 3x5",
+          "Wall-facing handstand hold 3x20-25s",
+          "Box pike press 2x5",
           "Scap push-up 2x10"
         ]
       },
-      "bodyweight": "Use the weekly targets after the skill block. If dips irritate your shoulders, switch to assisted or substitute.",
-      "note": "Tuesday is blank in the log, so keep tonight 1 rep further from failure than you want to.",
+      "bodyweight": "Use about 80-90% of the usual daily targets after the skill block tonight. If dips irritate your shoulders, switch to assisted or substitute.",
+      "note": "Tuesday and Wednesday morning are now counted missed, so add a longer warm-up and stay 2 reps from failure on pressing.",
       "evening": {
         "label": "Evening / gym",
         "bullets": [
-          "Med-ball chest throw 4x3",
-          "Incline press 3x6",
+          "8-10 min shoulder and T-spine primer before lifting",
+          "Med-ball chest throw 3x3",
+          "Incline press 2x6",
           "Chest-supported row 3x8",
-          "Landmine press 3x8 per side",
+          "Landmine press 2x8 per side",
           "Face pull 2x15"
         ]
       },
@@ -261,7 +262,7 @@
         ]
       },
       "bodyweight": "After the skill block, run the full daily target block in the evening gym session.",
-      "note": "No catch-up mentality. Stop with 1-2 reps in reserve on the big lifts.",
+      "note": "No catch-up mentality. Wednesday morning was also missed, so Thursday morning mobility becomes non-negotiable before the evening lower session.",
       "evening": {
         "label": "Evening / gym",
         "bullets": [
