@@ -177,6 +177,27 @@ const renderTargetLab = (data, maxes) => `
   </section>
 `;
 
+const renderTrackingHub = (tracking) => `
+  <section class="section-shell" id="tracking-hub">
+    <div class="shell section-grid">
+      <div>
+        <p class="section-kicker">Shared Tracking</p>
+        <h2 class="section-title">${tracking.title}</h2>
+        <p class="section-copy">${tracking.copy}</p>
+      </div>
+      <div class="tracking-card">
+        <p class="tracking-label">After each session, update:</p>
+        <ul class="tracking-list">
+          ${tracking.fields.map((item) => `<li>${item}</li>`).join("")}
+        </ul>
+        <a class="tracking-link" href="${tracking.url}" target="_blank" rel="noreferrer">
+          ${tracking.ctaLabel}
+        </a>
+      </div>
+    </div>
+  </section>
+`;
+
 const renderBuildChips = (builds = []) =>
   builds.length
     ? `
@@ -418,6 +439,7 @@ const mount = (data, maxes) => {
     renderDayRail(data.days),
     "<main>",
     renderTargetLab(data, maxes),
+    renderTrackingHub(data.tracking),
     renderSkillTracks(data.skillTracks),
     data.days.map(renderDaySection).join(""),
     renderAlternatives(data.alternatives),

@@ -290,6 +290,68 @@ main {
   gap: 1rem;
 }
 
+.tracking-card {
+  display: grid;
+  gap: 1rem;
+  align-content: start;
+}
+
+.tracking-label {
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.tracking-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 0.55rem;
+}
+
+.tracking-list li {
+  position: relative;
+  padding-left: 1.1rem;
+  line-height: 1.55;
+}
+
+.tracking-list li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.68rem;
+  width: 0.42rem;
+  height: 0.42rem;
+  border-radius: 50%;
+  background: var(--green);
+}
+
+.tracking-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: fit-content;
+  min-height: 3rem;
+  padding: 0.8rem 1.05rem;
+  border-radius: 999px;
+  background: var(--bg-deep);
+  color: #f7f2ea;
+  font-weight: 700;
+  text-decoration: none;
+  transition:
+    transform 180ms ease,
+    opacity 180ms ease;
+}
+
+.tracking-link:hover {
+  transform: translateY(-1px);
+  opacity: 0.94;
+}
+
 .skill-band {
   border-radius: var(--radius);
   border: 1px solid rgba(16, 35, 29, 0.1);
@@ -349,6 +411,7 @@ main {
 
 .input-strip,
 .formula-list,
+.tracking-card,
 .day-detail,
 .alt-list,
 .source-list {

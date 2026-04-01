@@ -10,7 +10,7 @@
     "focus": "Rebuild consistency with an integrated week that trains muscle density, calisthenics progressions, speed, agility, mobility, and flexibility without forcing you to improvise.",
     "rhythm": "Monday run-only, Tuesday to Saturday work, Sunday full rest.",
     "automation": "Refreshes Sundays at 3:00 PM",
-    "updatedAtLabel": "Mar 30, 2026 at 3:10 AM IST",
+    "updatedAtLabel": "Apr 1, 2026 at 8:38 AM IST",
     "targetIntensity": 0.6,
     "pullUpSecondSetRatio": 0.8
   },
@@ -41,6 +41,18 @@
       "formula": "60% of current technical max"
     }
   ],
+  "tracking": {
+    "title": "Log what you actually did.",
+    "copy": "Use the shared session log after each morning or evening block. Sunday's update should read this log before building next week, so mark completion, effort, joints, and any quick note while the session is still fresh.",
+    "ctaLabel": "Open the shared session log",
+    "url": "https://docs.google.com/spreadsheets/d/1CU5emkjh1-rZq22zOzVA-PfApG_6c2aLb5vsiMkUbU0/edit?usp=drivesdk",
+    "fields": [
+      "Completed: done / partial / skipped",
+      "Effort: easy / solid / hard",
+      "Joints: fine / tight / irritated",
+      "Notes: short context if something felt off"
+    ]
+  },
   "skillTracks": [
     {
       "title": "Push + balance",
