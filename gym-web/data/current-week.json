@@ -7,10 +7,10 @@
   "week": {
     "label": "Mar 30 - Apr 5, 2026",
     "phase": "Re-entry / Week 1",
-    "focus": "Wednesday evening, Thursday, and Friday all remained uncompleted, so the week now closes with one controlled Saturday bridge session instead of pretending multiple gym days still fit. The priority is a single clean full-body touch on squat, press, pull, hinge, and skill positions, then a real Sunday reset.",
-    "rhythm": "Saturday keeps the normal split of morning home mobility or flexibility and evening gym, but the evening work is now a trimmed bridge session rather than an athletic finisher. Sunday stays full rest.",
+    "focus": "Wednesday evening through Saturday morning all remained uncompleted, so the week now closes with one controlled Saturday evening re-entry session instead of pretending multiple gym days still fit. The priority is a single clean full-body touch on squat, press, pull, hinge, and skill positions, then a real Sunday reset.",
+    "rhythm": "Saturday morning is now counted missed, so tonight uses a longer warm-up, a shorter skill touch, and lighter daily calisthenics volume before Sunday rest.",
     "automation": "Nightly adjuster Mon-Sat at 10:00 PM, weekly reset Sunday at 9:00 PM",
-    "updatedAtLabel": "Apr 4, 2026 at 10:41 AM IST",
+    "updatedAtLabel": "Apr 4, 2026 at 1:34 PM IST",
     "targetIntensity": 0.55,
     "pullUpSecondSetRatio": 0.8
   },
@@ -319,33 +319,24 @@
         "Weekend recovery"
       ],
       "morning": {
-        "label": "Morning / mobility + flexibility reset",
-        "bullets": [
-          "5 min easy nasal breathing",
-          "90/90 switches 2x8 per side",
-          "Open book 2x6 per side",
-          "Wall slide or dowel shoulder flexion 2x8",
-          "Ankle rocks 2x12 per side",
-          "Couch stretch 60s per side",
-          "Hamstring or elephant walk 2x10",
-          "Deep squat hold 2x30-45s"
-        ]
+        "label": "Morning / missed mobility",
+        "copy": "Saturday morning mobility was also missed, so tonight needs a longer warm-up and cleaner volume instead of extra ambition."
       },
       "skill": {
         "label": "Skill block / short integrated touch",
         "copy": "Touch the main skill ladders once without chasing fatigue. This is just enough to reconnect the positions before the bridge lift.",
         "bullets": [
-          "Wall-facing handstand hold 2x20s",
+          "Wall-facing handstand hold 2x15-20s",
           "Scap pull-up or chest-to-bar intent pull-up 2x3",
-          "Assisted pistol to box 2x3 per side"
+          "Assisted pistol to box 2x2-3 per side"
         ]
       },
-      "bodyweight": "Use about 60-70% of the displayed daily targets after the skill block: 1 controlled set each of push-ups, dips, and squats plus 2 crisp pull-up sets. Stop well before grindy reps.",
-      "note": "A bridge day only works if you trim accessories before it turns into catch-up debt.",
+      "bodyweight": "Use about 50-60% of the displayed daily targets after the skill block: 1 controlled set each of push-ups, dips, and squats plus 2 crisp pull-up sets. Stop well before grindy reps.",
+      "note": "Because Saturday morning was also missed, tonight should feel like a re-entry session, not a redemption workout.",
       "evening": {
         "label": "Evening / gym",
         "bullets": [
-          "8-10 min full warm-up with hips, T-spine, wrists, and ramping sets",
+          "12 min full warm-up with hips, T-spine, wrists, and ramping sets",
           "Goblet squat or front squat 3x5",
           "Incline DB press or machine chest press 3x6",
           "Chest-supported row or cable row 3x8",
