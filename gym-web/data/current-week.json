@@ -7,11 +7,11 @@
   "week": {
     "label": "Mar 30 - Apr 5, 2026",
     "phase": "Re-entry / Week 1",
-    "focus": "Monday was missed, Tuesday turned into only an easy run, and Wednesday morning was also missed, so the first true gym session now starts Wednesday evening. The rest of the week is rebuilt as re-entry bridge -> lower -> upper -> athletic posterior chain instead of pretending the earlier work happened.",
-    "rhythm": "Wednesday evening starts the week for real, then Thursday-Saturday keep morning mobility and evening gym. Sunday stays full rest.",
+    "focus": "Wednesday evening, Thursday, and Friday all remained uncompleted, so the week now closes with one controlled Saturday bridge session instead of pretending multiple gym days still fit. The priority is a single clean full-body touch on squat, press, pull, hinge, and skill positions, then a real Sunday reset.",
+    "rhythm": "Saturday keeps the normal split of morning home mobility or flexibility and evening gym, but the evening work is now a trimmed bridge session rather than an athletic finisher. Sunday stays full rest.",
     "automation": "Nightly adjuster Mon-Sat at 10:00 PM, weekly reset Sunday at 9:00 PM",
-    "updatedAtLabel": "Apr 1, 2026 at 9:44 AM IST",
-    "targetIntensity": 0.6,
+    "updatedAtLabel": "Apr 4, 2026 at 10:41 AM IST",
+    "targetIntensity": 0.55,
     "pullUpSecondSetRatio": 0.8
   },
   "targets": [
@@ -310,51 +310,54 @@
       "slug": "saturday",
       "date": "2026-04-04",
       "day": "Saturday",
-      "title": "Athletic posterior chain + integration / evening gym",
-      "summary": "Finish the week with speed, posterior chain work, and one lighter touch on each skill ladder. The goal is to close the week feeling trained, not trashed.",
+      "title": "Full-body bridge + skill reset / evening gym",
+      "summary": "This is the only real training day left, so use it as a controlled bridge instead of trying to repay the whole week. Touch the main patterns once, keep the skill work technical, and leave Sunday as actual recovery.",
+      "status": "Bridge day",
       "builds": [
-        "Posterior power",
-        "Agility",
-        "Integrated skill"
+        "Full-body strength",
+        "Skill reset",
+        "Weekend recovery"
       ],
       "morning": {
-        "label": "Morning / long mobility + flexibility flow",
+        "label": "Morning / mobility + flexibility reset",
         "bullets": [
           "5 min easy nasal breathing",
           "90/90 switches 2x8 per side",
           "Open book 2x6 per side",
+          "Wall slide or dowel shoulder flexion 2x8",
+          "Ankle rocks 2x12 per side",
           "Couch stretch 60s per side",
           "Hamstring or elephant walk 2x10",
           "Deep squat hold 2x30-45s"
         ]
       },
       "skill": {
-        "label": "Skill block / weekly integration",
-        "copy": "Touch each ladder once more without turning the end of the week into a test.",
+        "label": "Skill block / short integrated touch",
+        "copy": "Touch the main skill ladders once without chasing fatigue. This is just enough to reconnect the positions before the bridge lift.",
         "bullets": [
           "Wall-facing handstand hold 2x20s",
-          "Hanging knee raise or tuck raise 2x8",
-          "Assisted pistol 2x3 per side"
+          "Scap pull-up or chest-to-bar intent pull-up 2x3",
+          "Assisted pistol to box 2x3 per side"
         ]
       },
-      "bodyweight": "Use the normal daily target block after the evening skill block. If the week catches up to you, keep the reps clean and submaximal instead of forcing numbers.",
-      "note": "Saturday should still leave Sunday as a real rest day.",
+      "bodyweight": "Use about 60-70% of the displayed daily targets after the skill block: 1 controlled set each of push-ups, dips, and squats plus 2 crisp pull-up sets. Stop well before grindy reps.",
+      "note": "A bridge day only works if you trim accessories before it turns into catch-up debt.",
       "evening": {
         "label": "Evening / gym",
         "bullets": [
-          "Line hops or jump rope 5 min",
-          "Trap-bar deadlift 3x4-6",
-          "Kettlebell swing 3x10",
-          "Bulgarian split squat 2x8 per leg",
-          "Farmer carry 3x25m",
-          "Lateral bounds 3x5 per side",
-          "Copenhagen plank 2x20-30s"
+          "8-10 min full warm-up with hips, T-spine, wrists, and ramping sets",
+          "Goblet squat or front squat 3x5",
+          "Incline DB press or machine chest press 3x6",
+          "Chest-supported row or cable row 3x8",
+          "Romanian deadlift 2x6-8",
+          "Farmer carry 2x20m",
+          "Hanging knee raise 2x8-10"
         ]
       },
       "swaps": [
-        "Trap-bar deadlift -> conventional deadlift, rack pull, heavy RDL",
-        "Kettlebell swing -> med-ball slam or explosive DB hinge",
-        "Line hops -> pogo jumps or jump rope"
+        "Goblet/front squat -> hack squat or leg press",
+        "Incline DB press -> weighted push-up or machine chest press",
+        "Chest-supported row -> cable row or 1-arm DB row"
       ]
     },
     {
