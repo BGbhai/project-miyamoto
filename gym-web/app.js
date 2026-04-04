@@ -177,17 +177,16 @@ const renderOperatingSystem = () => `
     <div class="shell">
       <div class="section-head">
         <p class="section-kicker">How to use the board</p>
-        <h2 class="section-title">Morning prepares. Evening builds.</h2>
+        <h2 class="section-title">Keep the board simple.</h2>
         <p class="section-copy">
-          This app should tell you what to do without interpretation. On normal training days, the
-          main calisthenics skill work belongs inside the evening gym session, not as a token side note.
+          This app should tell you what to do without interpretation. The main calisthenics skill work belongs inside the evening gym session, and morning work should appear only when it actually helps.
         </p>
       </div>
       <div class="workflow-grid">
         <article class="workflow-step">
           <span class="workflow-index">1</span>
-          <h3>Morning prep only</h3>
-          <p>Use the morning for mobility, flexibility, breathing, and joint prep. It sets up the evening session instead of competing with it.</p>
+          <h3>Morning is optional</h3>
+          <p>Use a morning block only when mobility, flexibility, or recovery work adds value. It should not exist just because the template expects it.</p>
         </article>
         <article class="workflow-step">
           <span class="workflow-index">2</span>
