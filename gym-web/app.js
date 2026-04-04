@@ -1,4 +1,5 @@
 const STORAGE_KEY = "miyamoto:maxes";
+const USER_TIME_ZONE = "Asia/Kolkata";
 
 const inputs = [
   { key: "pushUp", label: "Push-up max" },
@@ -18,7 +19,16 @@ const formatDate = (dateString) =>
   new Date(dateString).toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
+    timeZone: USER_TIME_ZONE,
   });
+
+const getTodayIso = () =>
+  new Intl.DateTimeFormat("en-CA", {
+    timeZone: USER_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
 
 const loadMaxes = () => {
   try {
@@ -61,79 +71,171 @@ const renderFormulaValue = (target, maxes, week) => {
     return `<span class="formula-value is-empty">Enter a max</span>`;
   }
 
-  const suffix = target.key === "pullUpSet2" ? " reps" : " reps";
-  return `<span class="formula-value">${value}${suffix}</span>`;
+  return `<span class="formula-value">${value} reps</span>`;
 };
 
-const renderHero = (data) => `
+const getAnchorDay = (days) => {
+  const today = getTodayIso();
+  return (
+    days.find((day) => day.date === today) ||
+    days.find((day) => day.date > today) ||
+    days[days.length - 1]
+  );
+};
+
+const getNextDay = (days, anchorDay) => {
+  const currentIndex = days.findIndex((day) => day.slug === anchorDay.slug);
+  if (currentIndex === -1 || currentIndex === days.length - 1) {
+    return null;
+  }
+  return days[currentIndex + 1];
+};
+
+const escapeHtml = (value = "") =>
+  value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+
+const renderTextBlock = (copy) =>
+  copy ? `<p class="session-copy">${escapeHtml(copy)}</p>` : "";
+
+const renderBullets = (bullets = []) =>
+  bullets.length
+    ? `<ul class="session-list">${bullets
+        .map((item) => `<li>${escapeHtml(item)}</li>`)
+        .join("")}</ul>`
+    : "";
+
+const renderDuration = (duration) =>
+  duration ? `<span class="session-time">${escapeHtml(duration)}</span>` : "";
+
+const renderHeader = (data, anchorDay, nextDay) => `
   <header class="hero">
     <div class="shell">
       <div class="hero-panel">
-        <div class="hero-grid">
-          <section>
-            <span class="eyebrow">${data.brand.kicker}</span>
-            <h1>${data.brand.title}</h1>
-            <p class="hero-copy">${data.brand.copy}</p>
-            <div class="hero-tags">
-              <span class="hero-tag">${data.week.label}</span>
-              <span class="hero-tag">${data.week.phase}</span>
-              <span class="hero-tag">Sunday rest locked</span>
+        <div class="hero-copy-block">
+          <span class="eyebrow">${escapeHtml(data.brand.kicker)}</span>
+          <h1>${escapeHtml(data.brand.title)}</h1>
+          <p class="hero-copy">${escapeHtml(data.brand.copy)}</p>
+        </div>
+        <div class="hero-meta-grid">
+          <div class="hero-meta-row">
+            <span class="hero-meta-label">Today</span>
+            <div class="hero-meta-value">
+              <strong>${escapeHtml(anchorDay.day)}</strong>
+              <span>${escapeHtml(anchorDay.title)}</span>
             </div>
-          </section>
-          <aside class="hero-meta">
-            <div class="meta-line">
-              <span class="meta-label">Focus</span>
-              <div class="meta-value">${data.week.focus}</div>
+          </div>
+          <div class="hero-meta-row">
+            <span class="hero-meta-label">Next</span>
+            <div class="hero-meta-value">
+              ${
+                nextDay
+                  ? `<strong>${escapeHtml(nextDay.day)}</strong><span>${escapeHtml(nextDay.title)}</span>`
+                  : `<strong>Week closes here</strong><span>Sunday rest stays locked.</span>`
+              }
             </div>
-            <div class="meta-line">
-              <span class="meta-label">Refresh</span>
-              <div class="meta-value">${data.week.automation}</div>
+          </div>
+          <div class="hero-meta-row">
+            <span class="hero-meta-label">Week</span>
+            <div class="hero-meta-value">
+              <strong>${escapeHtml(data.week.label)}</strong>
+              <span>${escapeHtml(data.week.phase)}</span>
             </div>
-            <div class="meta-line">
-              <span class="meta-label">Rhythm</span>
-              <div class="meta-value">${data.week.rhythm}</div>
+          </div>
+          <div class="hero-meta-row">
+            <span class="hero-meta-label">Updated</span>
+            <div class="hero-meta-value">
+              <strong>${escapeHtml(data.week.updatedAtLabel)}</strong>
+              <span>${escapeHtml(data.week.automation)}</span>
             </div>
-            <div class="meta-line">
-              <span class="meta-label">Updated</span>
-              <div class="meta-value">${data.week.updatedAtLabel}</div>
-            </div>
-          </aside>
+          </div>
         </div>
       </div>
     </div>
   </header>
 `;
 
-const renderDayRail = (days) => `
-  <div class="day-rail-wrap">
-    <div class="shell">
-      <nav class="day-rail" aria-label="Jump to day">
-        ${days
-          .map(
-            (day) => `
-          <button class="day-pill" data-target="${day.slug}">
-            <small>${day.day}</small>
-            <strong>${formatDate(day.date)}</strong>
-          </button>
-        `,
-          )
-          .join("")}
-      </nav>
-    </div>
+const renderQuickActions = (tracking) => `
+  <div class="shell">
+    <nav class="quick-actions" aria-label="Primary actions">
+      <a class="quick-action is-primary" href="#today-board">Start with today</a>
+      <a class="quick-action" href="#target-lab">Targets</a>
+      <a class="quick-action" href="#week-board">Week board</a>
+      <a class="quick-action" href="${tracking.url}" target="_blank" rel="noreferrer">
+        ${escapeHtml(tracking.ctaLabel)}
+      </a>
+    </nav>
   </div>
+`;
+
+const renderOperatingSystem = () => `
+  <section class="section-shell" id="workflow-guide">
+    <div class="shell">
+      <div class="section-head">
+        <p class="section-kicker">How to use the board</p>
+        <h2 class="section-title">Morning prepares. Evening builds.</h2>
+        <p class="section-copy">
+          This app should tell you what to do without interpretation. On normal training days, the
+          main calisthenics skill work belongs inside the evening gym session, not as a token side note.
+        </p>
+      </div>
+      <div class="workflow-grid">
+        <article class="workflow-step">
+          <span class="workflow-index">1</span>
+          <h3>Morning prep only</h3>
+          <p>Use the morning for mobility, flexibility, breathing, and joint prep. It sets up the evening session instead of competing with it.</p>
+        </article>
+        <article class="workflow-step">
+          <span class="workflow-index">2</span>
+          <h3>Long evening skill block</h3>
+          <p>Standard days should carry a real 15-25 minute skill block before the main lift. Bridge days can stay shorter if recovery demands it.</p>
+        </article>
+        <article class="workflow-step">
+          <span class="workflow-index">3</span>
+          <h3>Finish and log it</h3>
+          <p>End with the daily calisthenics block, then mark the session in the shared log. Blank completion still counts as skipped.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+`;
+
+const renderTodayBoard = (day) => `
+  <section class="section-shell" id="today-board">
+    <div class="shell">
+      <div class="section-head">
+        <p class="section-kicker">Today</p>
+        <h2 class="section-title">${escapeHtml(day.day)} / ${escapeHtml(day.title)}</h2>
+        <p class="section-copy">${escapeHtml(day.summary)}</p>
+        ${day.status ? `<span class="status-chip">${escapeHtml(day.status)}</span>` : ""}
+      </div>
+      ${renderBuildChips(day.builds)}
+      <div class="today-grid">
+        ${renderPrepBlock(day)}
+        ${renderEveningMainBlock(day, true)}
+        ${renderFinisherBlock(day)}
+        ${renderSwapBlock(day)}
+      </div>
+    </div>
+  </section>
 `;
 
 const renderTargetLab = (data, maxes) => `
   <section class="section-shell" id="target-lab">
     <div class="shell target-lab">
       <div>
-        <p class="section-kicker">Target Lab</p>
-        <h2 class="section-title">Set your maxes once, then stop guessing.</h2>
-        <p class="section-copy">
-          This week is programmed at ${Math.round(data.week.targetIntensity * 100)}% of your
-          current technical max. The board below already blends muscle density, skill work,
-          speed, agility, and mobility, so your job is to hit the targets and follow the day.
-        </p>
+        <div class="section-head">
+          <p class="section-kicker">Target Lab</p>
+          <h2 class="section-title">Set your maxes once.</h2>
+          <p class="section-copy">
+            This week uses ${Math.round(data.week.targetIntensity * 100)}% of your current technical max.
+            The board already blends muscle density, skill work, agility, mobility, and flexibility. Set the numbers and follow the day.
+          </p>
+        </div>
         <div class="input-strip">
           <div class="input-grid">
             ${inputs
@@ -163,8 +265,8 @@ const renderTargetLab = (data, maxes) => `
               (target) => `
             <li>
               <div class="formula-meta">
-                <span class="formula-label">${target.label}</span>
-                <span class="formula-rule">${target.formula}</span>
+                <span class="formula-label">${escapeHtml(target.label)}</span>
+                <span class="formula-rule">${escapeHtml(target.formula)}</span>
               </div>
               ${renderFormulaValue(target, maxes, data.week)}
             </li>
@@ -179,19 +281,18 @@ const renderTargetLab = (data, maxes) => `
 
 const renderTrackingHub = (tracking) => `
   <section class="section-shell" id="tracking-hub">
-    <div class="shell section-grid">
-      <div>
+    <div class="shell tracking-hub">
+      <div class="section-head">
         <p class="section-kicker">Shared Tracking</p>
-        <h2 class="section-title">${tracking.title}</h2>
-        <p class="section-copy">${tracking.copy}</p>
+        <h2 class="section-title">${escapeHtml(tracking.title)}</h2>
+        <p class="section-copy">${escapeHtml(tracking.copy)}</p>
       </div>
       <div class="tracking-card">
-        <p class="tracking-label">After each session, update:</p>
         <ul class="tracking-list">
-          ${tracking.fields.map((item) => `<li>${item}</li>`).join("")}
+          ${tracking.fields.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
         </ul>
         <a class="tracking-link" href="${tracking.url}" target="_blank" rel="noreferrer">
-          ${tracking.ctaLabel}
+          ${escapeHtml(tracking.ctaLabel)}
         </a>
       </div>
     </div>
@@ -202,64 +303,132 @@ const renderBuildChips = (builds = []) =>
   builds.length
     ? `
       <div class="build-chip-row" aria-label="Training qualities">
-        ${builds.map((item) => `<span class="build-chip">${item}</span>`).join("")}
+        ${builds.map((item) => `<span class="build-chip">${escapeHtml(item)}</span>`).join("")}
       </div>
     `
     : "";
 
+const renderPrepBlock = (day) => `
+  <article class="session-block session-block--prep">
+    <div class="session-step">1</div>
+    <div class="session-body">
+      <div class="session-head">
+        <p class="session-kicker">Morning prep</p>
+        <h3>${escapeHtml(day.morning.label)}</h3>
+        ${renderDuration(day.morning.duration)}
+      </div>
+      ${renderTextBlock(day.morning.copy)}
+      ${renderBullets(day.morning.bullets)}
+    </div>
+  </article>
+`;
+
+const renderEveningMainBlock = (day, isToday = false) => `
+  <article class="session-block session-block--main">
+    <div class="session-step">2</div>
+    <div class="session-body">
+      <div class="session-head">
+        <p class="session-kicker">Evening main block</p>
+        <h3>${isToday ? "Tonight's build" : "Skill + gym session"}</h3>
+        <span class="session-time">
+          ${
+            day.skill.duration && day.evening.duration
+              ? `${escapeHtml(day.skill.duration)} skill + ${escapeHtml(day.evening.duration)} lift`
+              : "Skill first, lift second"
+          }
+        </span>
+      </div>
+      <div class="main-block-grid">
+        <section class="sub-session sub-session--skill">
+          <div class="sub-session-head">
+            <p class="sub-session-kicker">Skill block</p>
+            <h4>${escapeHtml(day.skill.label)}</h4>
+            ${renderDuration(day.skill.duration)}
+          </div>
+          ${renderTextBlock(day.skill.copy)}
+          ${renderBullets(day.skill.bullets)}
+        </section>
+        <section class="sub-session sub-session--lift">
+          <div class="sub-session-head">
+            <p class="sub-session-kicker">Gym block</p>
+            <h4>${escapeHtml(day.evening.label)}</h4>
+            ${renderDuration(day.evening.duration)}
+          </div>
+          ${renderTextBlock(day.evening.copy)}
+          ${renderBullets(day.evening.bullets)}
+        </section>
+      </div>
+    </div>
+  </article>
+`;
+
+const renderFinisherBlock = (day) => `
+  <article class="session-block session-block--finisher">
+    <div class="session-step">3</div>
+    <div class="session-body">
+      <div class="session-head">
+        <p class="session-kicker">Daily finisher</p>
+        <h3>Daily calisthenics</h3>
+      </div>
+      <p class="session-copy">${escapeHtml(day.bodyweight)}</p>
+      ${day.note ? `<p class="day-note">${escapeHtml(day.note)}</p>` : ""}
+    </div>
+  </article>
+`;
+
+const renderSwapBlock = (day) => `
+  <article class="session-block session-block--swap">
+    <div class="session-step">4</div>
+    <div class="session-body">
+      <div class="session-head">
+        <p class="session-kicker">If something is unavailable</p>
+        <h3>Swaps</h3>
+      </div>
+      <ul class="swap-list">
+        ${day.swaps.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
+      </ul>
+    </div>
+  </article>
+`;
+
+const renderDayRail = (days, activeSlug) => `
+  <div class="day-rail-wrap">
+    <div class="shell">
+      <nav class="day-rail" aria-label="Jump to day">
+        ${days
+          .map(
+            (day) => `
+          <button class="day-pill ${day.slug === activeSlug ? "active" : ""}" data-target="${day.slug}">
+            <small>${escapeHtml(day.day)}</small>
+            <strong>${escapeHtml(formatDate(day.date))}</strong>
+          </button>
+        `,
+          )
+          .join("")}
+      </nav>
+    </div>
+  </div>
+`;
+
 const renderDaySection = (day) => `
   <section class="section-shell day-section" id="${day.slug}">
-    <div class="shell section-grid">
-      <div class="day-head">
-        <div class="day-date">${day.day} / ${formatDate(day.date)}</div>
-        <h2 class="day-title">${day.title}</h2>
-        <p class="section-copy">${day.summary}</p>
-        ${
-          day.status
-            ? `<span class="status-chip">${day.status}</span>`
-            : ""
-        }
-        ${renderBuildChips(day.builds)}
-      </div>
-      <div class="day-summary">
-        <article class="day-detail">
-          <h3>${day.morning.label}</h3>
-          ${day.morning.copy ? `<p>${day.morning.copy}</p>` : ""}
-          ${
-            day.morning.bullets?.length
-              ? `<ul>${day.morning.bullets.map((item) => `<li>${item}</li>`).join("")}</ul>`
-              : ""
-          }
-        </article>
-        <article class="day-detail">
-          <h3>${day.skill.label}</h3>
-          ${day.skill.copy ? `<p>${day.skill.copy}</p>` : ""}
-          ${
-            day.skill.bullets?.length
-              ? `<ul>${day.skill.bullets.map((item) => `<li>${item}</li>`).join("")}</ul>`
-              : ""
-          }
-        </article>
-        <article class="day-detail">
-          <h3>Daily calisthenics</h3>
-          <p>${day.bodyweight}</p>
-          ${
-            day.note ? `<p class="day-note">${day.note}</p>` : ""
-          }
-        </article>
-        <article class="day-detail">
-          <h3>${day.evening.label}</h3>
-          ${day.evening.copy ? `<p>${day.evening.copy}</p>` : ""}
-          ${
-            day.evening.bullets?.length
-              ? `<ul>${day.evening.bullets.map((item) => `<li>${item}</li>`).join("")}</ul>`
-              : ""
-          }
-        </article>
-        <article class="day-detail">
-          <h3>Swaps</h3>
-          <ul>${day.swaps.map((item) => `<li>${item}</li>`).join("")}</ul>
-        </article>
+    <div class="shell">
+      <div class="day-shell">
+        <div class="day-head">
+          <div class="day-topline">
+            <span class="day-date">${escapeHtml(day.day)} / ${escapeHtml(formatDate(day.date))}</span>
+            ${day.status ? `<span class="status-chip">${escapeHtml(day.status)}</span>` : ""}
+          </div>
+          <h2 class="day-title">${escapeHtml(day.title)}</h2>
+          <p class="section-copy">${escapeHtml(day.summary)}</p>
+          ${renderBuildChips(day.builds)}
+        </div>
+        <div class="day-session-stack">
+          ${renderPrepBlock(day)}
+          ${renderEveningMainBlock(day)}
+          ${renderFinisherBlock(day)}
+          ${renderSwapBlock(day)}
+        </div>
       </div>
     </div>
   </section>
@@ -267,14 +436,12 @@ const renderDaySection = (day) => `
 
 const renderSkillTracks = (tracks) => `
   <section class="section-shell" id="skill-tracks">
-    <div class="shell section-grid">
-      <div>
+    <div class="shell">
+      <div class="section-head">
         <p class="section-kicker">Skill Tracks</p>
         <h2 class="section-title">Train the ladder, not a fantasy list.</h2>
         <p class="section-copy">
-          "All the skills" is a long-term goal, not a weekly task list. The smart version is to
-          move four tracks forward together: pushing and balance, pulling power, core and
-          compression, and lower-body control.
+          Your board advances four tracks together: pushing and balance, pulling power, core and compression, and lower-body control.
         </p>
       </div>
       <div class="skill-grid">
@@ -282,11 +449,11 @@ const renderSkillTracks = (tracks) => `
           .map(
             (track) => `
           <article class="skill-band">
-            <p class="skill-kicker">${track.horizon}</p>
-            <h3>${track.title}</h3>
-            <p>${track.currentFocus}</p>
+            <p class="skill-kicker">${escapeHtml(track.horizon)}</p>
+            <h3>${escapeHtml(track.title)}</h3>
+            <p>${escapeHtml(track.currentFocus)}</p>
             <ul class="skill-milestones">
-              ${track.milestones.map((item) => `<li>${item}</li>`).join("")}
+              ${track.milestones.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
             </ul>
           </article>
         `,
@@ -299,13 +466,12 @@ const renderSkillTracks = (tracks) => `
 
 const renderAlternatives = (groups) => `
   <section class="section-shell" id="alternatives">
-    <div class="shell section-grid">
-      <div>
+    <div class="shell">
+      <div class="section-head">
         <p class="section-kicker">Exercise Alternatives</p>
         <h2 class="section-title">Keep the intent. Swap the tool.</h2>
         <p class="section-copy">
-          Busy gym, sketchy joint, or equipment issue should not kill the session.
-          These swaps preserve the training effect without forcing bad reps.
+          Busy gym, sketchy joint, or missing equipment should not kill the session. Swap the tool and keep the training effect.
         </p>
       </div>
       <div class="alt-list">
@@ -313,14 +479,14 @@ const renderAlternatives = (groups) => `
           .map(
             (group) => `
           <details>
-            <summary>${group.title}</summary>
+            <summary>${escapeHtml(group.title)}</summary>
             <div class="alt-table">
               ${group.items
                 .map(
                   (item) => `
                 <div class="alt-row">
-                  <div class="alt-primary">${item.primary}</div>
-                  <div class="alt-swaps">${item.swaps.join(" / ")}</div>
+                  <div class="alt-primary">${escapeHtml(item.primary)}</div>
+                  <div class="alt-swaps">${item.swaps.map(escapeHtml).join(" / ")}</div>
                 </div>
               `,
                 )
@@ -337,12 +503,12 @@ const renderAlternatives = (groups) => `
 
 const renderSources = (sources) => `
   <section class="section-shell" id="sources">
-    <div class="shell section-grid">
-      <div>
+    <div class="shell">
+      <div class="section-head">
         <p class="section-kicker">Sources</p>
-        <h2 class="section-title">Programming guardrails, not random gym lore.</h2>
+        <h2 class="section-title">Programming guardrails.</h2>
         <p class="section-copy">
-          These are the references behind the weekly load and recovery logic.
+          These references anchor the weekly load and recovery logic.
         </p>
       </div>
       <div class="source-list">
@@ -352,8 +518,8 @@ const renderSources = (sources) => `
               (source) => `
             <li>
               <div class="formula-meta">
-                <span class="formula-label">${source.label}</span>
-                <span class="formula-rule">${source.note}</span>
+                <span class="formula-label">${escapeHtml(source.label)}</span>
+                <span class="formula-rule">${escapeHtml(source.note)}</span>
               </div>
               <a class="source-link" href="${source.url}" target="_blank" rel="noreferrer">Open</a>
             </li>
@@ -368,7 +534,7 @@ const renderSources = (sources) => `
 
 const renderFooter = () => `
   <footer class="shell footer">
-    Weekly updates are designed to be light on Sunday and useful on Monday.
+    Weekly updates stay light on Sunday so Monday does not feel like punishment.
   </footer>
 `;
 
@@ -394,7 +560,7 @@ const setupDayRail = () => {
   buttons.forEach((button) => {
     button.addEventListener("click", () => {
       const target = document.getElementById(button.dataset.target);
-      target?.scrollIntoView({ block: "start" });
+      target?.scrollIntoView({ block: "start", behavior: "smooth" });
     });
   });
 
@@ -433,15 +599,23 @@ const setupDayRail = () => {
 };
 
 const mount = (data, maxes) => {
+  const anchorDay = getAnchorDay(data.days);
+  const nextDay = getNextDay(data.days, anchorDay);
   const app = document.getElementById("app");
+
   app.innerHTML = [
-    renderHero(data),
-    renderDayRail(data.days),
+    renderHeader(data, anchorDay, nextDay),
+    renderQuickActions(data.tracking),
     "<main>",
+    renderTodayBoard(anchorDay),
+    renderOperatingSystem(),
     renderTargetLab(data, maxes),
     renderTrackingHub(data.tracking),
-    renderSkillTracks(data.skillTracks),
+    `<section id="week-board">`,
+    renderDayRail(data.days, anchorDay.slug),
     data.days.map(renderDaySection).join(""),
+    `</section>`,
+    renderSkillTracks(data.skillTracks),
     renderAlternatives(data.alternatives),
     renderSources(data.sources),
     "</main>",
@@ -472,13 +646,13 @@ const init = async () => {
 init().catch((error) => {
   const app = document.getElementById("app");
   app.innerHTML = `
-    <main class="shell" style="padding: 4rem 1.25rem;">
-      <h1 style="font-family: Sora, sans-serif;">Project Miyamoto is not loading.</h1>
-      <p style="max-width: 40rem; line-height: 1.6;">
-        The weekly data file could not be loaded. Check <code>gym-web/data/current-week.json</code>
-        and try again.
+    <main class="shell load-error">
+      <h1>Project Miyamoto is not loading.</h1>
+      <p>
+        The weekly data file could not be loaded. Check
+        <code>gym-web/data/current-week.json</code> and try again.
       </p>
-      <pre style="white-space: pre-wrap;">${String(error)}</pre>
+      <pre>${String(error)}</pre>
     </main>
   `;
 });
