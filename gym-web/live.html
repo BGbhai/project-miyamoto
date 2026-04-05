@@ -19,15 +19,41 @@
       href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=Sora:wght@400;600;700;800&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="./styles.css?v=20260405c" />
+    <link rel="stylesheet" href="./styles.css?v=20260405d" />
   </head>
   <body>
     <div id="app"></div>
     <script>
-      (function () {
-        localStorage.setItem("miyamoto:build", "20260405c");
+      (async function () {
+        const build = "20260405d";
+        const url = new URL(location.href);
+        localStorage.setItem("miyamoto:build", build);
+
+        if ("serviceWorker" in navigator) {
+          const registrations = await navigator.serviceWorker.getRegistrations();
+          if (registrations.length) {
+            await Promise.all(
+              registrations.map((registration) =>
+                registration.unregister().catch(() => undefined),
+              ),
+            );
+          }
+        }
+
+        if ("caches" in window) {
+          const cacheKeys = await caches.keys();
+          const staleKeys = cacheKeys.filter((name) => /miya|miyamoto/i.test(name));
+          if (staleKeys.length) {
+            await Promise.all(staleKeys.map((name) => caches.delete(name)));
+          }
+        }
+
+        if (url.searchParams.get("refresh") !== build) {
+          url.searchParams.set("refresh", build);
+          location.replace(url.toString());
+        }
       })();
     </script>
-    <script type="module" src="./app.js?v=20260405c"></script>
+    <script type="module" src="./app.js?v=20260405d"></script>
   </body>
 </html>

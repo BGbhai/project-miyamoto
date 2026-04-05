@@ -19,25 +19,47 @@
       href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=Sora:wght@400;600;700;800&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="./styles.css?v=20260405b" />
+    <link rel="stylesheet" href="./styles.css?v=20260405d" />
   </head>
   <body>
     <div id="app"></div>
     <script>
-      (function () {
-        const build = "20260405b";
+      (async function () {
+        const build = "20260405d";
         const key = "miyamoto:build";
+        const url = new URL(location.href);
         const seen = localStorage.getItem(key);
-        if (seen !== build) {
-          localStorage.setItem(key, build);
-          if (!location.search.includes("refresh=")) {
-            const url = new URL(location.href);
-            url.searchParams.set("refresh", build);
-            location.replace(url.toString());
+        let needsRefresh = seen !== build;
+
+        localStorage.setItem(key, build);
+
+        if ("serviceWorker" in navigator) {
+          const registrations = await navigator.serviceWorker.getRegistrations();
+          if (registrations.length) {
+            await Promise.all(
+              registrations.map((registration) =>
+                registration.unregister().catch(() => undefined),
+              ),
+            );
+            needsRefresh = true;
           }
+        }
+
+        if ("caches" in window) {
+          const cacheKeys = await caches.keys();
+          const staleKeys = cacheKeys.filter((name) => /miya|miyamoto/i.test(name));
+          if (staleKeys.length) {
+            await Promise.all(staleKeys.map((name) => caches.delete(name)));
+            needsRefresh = true;
+          }
+        }
+
+        if (needsRefresh && url.searchParams.get("refresh") !== build) {
+          url.searchParams.set("refresh", build);
+          location.replace(url.toString());
         }
       })();
     </script>
-    <script type="module" src="./app.js?v=20260405b"></script>
+    <script type="module" src="./app.js?v=20260405d"></script>
   </body>
 </html>
