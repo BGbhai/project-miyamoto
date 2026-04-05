@@ -4,6 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Project Miyamoto</title>
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
     <meta
       name="description"
       content="Mobile-first weekly workout board for Project Miyamoto."
@@ -16,10 +19,25 @@
       href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=Sora:wght@400;600;700;800&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./styles.css?v=20260405b" />
   </head>
   <body>
     <div id="app"></div>
-    <script type="module" src="./app.js"></script>
+    <script>
+      (function () {
+        const build = "20260405b";
+        const key = "miyamoto:build";
+        const seen = localStorage.getItem(key);
+        if (seen !== build) {
+          localStorage.setItem(key, build);
+          if (!location.search.includes("refresh=")) {
+            const url = new URL(location.href);
+            url.searchParams.set("refresh", build);
+            location.replace(url.toString());
+          }
+        }
+      })();
+    </script>
+    <script type="module" src="./app.js?v=20260405b"></script>
   </body>
 </html>
