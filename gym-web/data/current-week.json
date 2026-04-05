@@ -2,16 +2,16 @@
   "brand": {
     "kicker": "Project Miyamoto / Weekly Training Board",
     "title": "Follow the board. Build the stack.",
-    "copy": "A mobile-first weekly board built so you can scan the day fast: morning mobility or flexibility, a real evening skill block attached to gym work, then the daily calisthenics finisher."
+    "copy": "A mobile-first weekly board built so you can train hard in the morning, hit skill work while you are fresh, and use the evening to restore mobility and flexibility without guesswork."
   },
   "week": {
-    "label": "Mar 30 - Apr 5, 2026",
-    "phase": "Re-entry / Week 1",
-    "focus": "Wednesday evening through Saturday morning all remained uncompleted, so the week now closes with one controlled Saturday evening re-entry session instead of pretending multiple gym days still fit. The priority is a single clean full-body touch on squat, press, pull, hinge, and skill positions, then a real Sunday reset.",
-    "rhythm": "The normal system is morning prep and a longer evening skill-plus-gym session. This Saturday remains a bridge exception, so tonight keeps the skill touch shorter before Sunday rest.",
+    "label": "Apr 6 - Apr 12, 2026",
+    "phase": "Restart / Week 1",
+    "focus": "The last logged week was mostly missed, so this week is a clean restart rather than a catch-up block. The priority is to complete six honest morning gym-plus-skill sessions and six lighter evening mobility sessions without digging a recovery hole on day one.",
+    "rhythm": "Morning gym + skill Monday-Saturday, evening mobility + flexibility Monday-Saturday, Sunday full rest. Monday is a full training day, not a ramp-in placeholder.",
     "automation": "Nightly adjuster Mon-Sat at 10:00 PM, weekly reset Sunday at 9:00 PM",
-    "updatedAtLabel": "Apr 4, 2026 at 1:34 PM IST",
-    "targetIntensity": 0.55,
+    "updatedAtLabel": "Apr 5, 2026 at 8:00 PM IST",
+    "targetIntensity": 0.6,
     "pullUpSecondSetRatio": 0.8
   },
   "targets": [
@@ -58,194 +58,124 @@
     {
       "title": "Push + balance",
       "horizon": "Wall line -> handstand -> handstand push-up",
-      "currentFocus": "Build shoulder line, wrist tolerance, and overhead stacking before chasing freestanding handstands.",
+      "currentFocus": "Build shoulder line, wrist tolerance, and overhead stacking while you are fresh in the morning instead of trying to do precision work when you are already tired.",
       "milestones": [
-        "Scap push-ups and pike push-ups stay clean",
-        "Wall handstand hold 20-30s with ribs down",
-        "Box or elevated pike press strength improves week to week"
+        "Wall handstand hold stays stacked for 20-30s",
+        "Pike pressing strength improves without elbow irritation",
+        "Balance drills stop feeling like random survival reps"
       ]
     },
     {
       "title": "Pull + lever strength",
       "horizon": "Chest-to-bar -> muscle-up / tuck lever -> front lever",
-      "currentFocus": "Own scap depression, chest-to-bar intent, and hollow pulling before explosive skill attempts.",
+      "currentFocus": "Own scap depression, active hang position, and explosive pull intent before chasing harder transitions.",
       "milestones": [
-        "Pull-ups stay crisp without elbow irritation",
-        "Scap pull-ups and chest-to-bar intent become stronger",
-        "Tuck front lever or skin-the-cat prep can be added later without chaos"
+        "Pull-ups stay crisp at the programmed submax volume",
+        "Chest-to-bar intent gets faster and cleaner",
+        "Front-lever prep can be added later without shoulder chaos"
       ]
     },
     {
       "title": "Core + compression",
       "horizon": "Hollow hold -> L-sit -> V-sit / press work",
-      "currentFocus": "Train hollow body, compression, and hip flexor control so every other skill gets easier.",
+      "currentFocus": "Train hollow body, hanging control, and compression as actual skill positions instead of just ab fatigue.",
       "milestones": [
         "Hollow body hold stays solid for 20-30s",
-        "Hanging knee raise becomes strict and controlled",
-        "Compression work starts feeling like skill practice, not random ab work"
+        "Hanging knee raise becomes strict and quiet",
+        "Compression work improves hip flexor control week to week"
       ]
     },
     {
       "title": "Leg control",
       "horizon": "Split squat -> pistol progression -> clean pistol squat",
-      "currentFocus": "Keep lower-body skill work honest with ankle mobility, single-leg control, and squat pattern quality.",
+      "currentFocus": "Keep lower-body skill work honest with ankle range, single-leg balance, and clean squat positioning.",
       "milestones": [
-        "Assisted pistol pattern feels balanced",
+        "Assisted pistol pattern feels balanced on both sides",
         "Deep squat position gets more comfortable",
-        "Single-leg strength supports eventual pistol and jump control work"
+        "Landing mechanics improve without knee irritation"
       ]
     }
   ],
   "days": [
     {
       "slug": "monday",
-      "date": "2026-03-30",
+      "date": "2026-04-06",
       "day": "Monday",
-      "title": "Run-only ramp-in",
-      "summary": "This ramp-in day was missed. Leave it logged that way and move on cleanly.",
-      "status": "Missed",
-      "builds": [
-        "Reset",
-        "Schedule honesty",
-        "Recovery"
-      ],
-      "morning": {
-        "label": "Morning / off",
-        "duration": "Off",
-        "copy": "Nothing happened here. No catch-up needed."
-      },
-      "skill": {
-        "label": "Skill block / off",
-        "duration": "Off",
-        "copy": "No skill work. The useful move now is to keep the rest of the week coherent instead of emotionally repaying Monday."
-      },
-      "bodyweight": "Skip the daily bodyweight block for Monday.",
-      "note": "A missed Monday should not make Wednesday stupid.",
-      "evening": {
-        "label": "Evening / missed",
-        "duration": "Missed",
-        "copy": "The planned easy run did not happen."
-      },
-      "swaps": [
-        "No catch-up session",
-        "Log it and move on",
-        "Save effort for Wednesday evening"
-      ]
-    },
-    {
-      "slug": "tuesday",
-      "date": "2026-03-31",
-      "day": "Tuesday",
-      "title": "Lower day missed / easy run only",
-      "summary": "The planned lower session and mobility were missed. The only completed work was an easy evening run, which still counts as a useful re-entry touch.",
-      "status": "Partial",
-      "builds": [
-        "Aerobic touch",
-        "Recovery",
-        "Momentum"
-      ],
-      "morning": {
-        "label": "Morning / missed",
-        "duration": "Missed",
-        "copy": "The planned lower strength session did not happen."
-      },
-      "skill": {
-        "label": "Skill block / skipped",
-        "duration": "Skipped",
-        "copy": "No pistol or calisthenics skill work happened Tuesday. That work now gets redistributed across the remaining days instead of piled onto one session."
-      },
-      "bodyweight": "Skip the daily bodyweight block for Tuesday. Start it again on Wednesday evening.",
-      "note": "The easy run helps, but it does not magically replace the missed lower gym session.",
-      "evening": {
-        "label": "Evening / easy run completed",
-        "duration": "20-30 min",
-        "bullets": [
-          "20-30 min easy run",
-          "Keep it conversational",
-          "No added lower-body catch-up work"
-        ]
-      },
-      "swaps": [
-        "Easy run -> incline walk if joints felt off",
-        "Easy run -> bike flush if legs felt heavy",
-        "No extra lifting"
-      ]
-    },
-    {
-      "slug": "wednesday",
-      "date": "2026-04-01",
-      "day": "Wednesday",
-      "title": "Re-entry full body + handstand line / evening gym",
-      "summary": "This is the first true gym session of the week, so treat it as a bridge day. Touch the big patterns, wake up the shoulders and hips, and leave enough in the tank to train properly Thursday-Saturday.",
-      "status": "Reset day",
+      "title": "Full-body foundation + handstand line",
+      "summary": "Start the week with a full morning session that touches squat, press, pull, and hinge while you are fresh. Keep the volume honest and leave the gym feeling like you could still train again tomorrow.",
       "builds": [
         "Full-body density",
         "Push balance",
-        "Re-entry control"
+        "Re-entry consistency"
       ],
       "morning": {
-        "label": "Morning / missed mobility",
-        "duration": "Missed",
-        "copy": "Wednesday morning mobility was also missed, so tonight needs a longer warm-up before any real work starts."
+        "label": "Morning / gym foundation",
+        "duration": "55-65 min",
+        "bullets": [
+          "8-10 min warm-up with hips, T-spine, shoulders, and wrists",
+          "Front squat or goblet squat 3x5",
+          "Incline DB press 3x6",
+          "Chest-supported row 3x8",
+          "Romanian deadlift 2x8",
+          "Farmer carry 2x20m"
+        ]
       },
       "skill": {
-        "label": "Evening skill block / handstand line",
-        "duration": "18-20 min",
-        "copy": "This is a real skill block, not a token primer. Keep it technical, but give it enough time to own the shoulder line before the lift starts.",
+        "label": "Morning skill block / handstand line",
+        "duration": "20-25 min",
+        "copy": "Do the skill work before the main lift while the shoulders and wrists are still fresh.",
         "bullets": [
-          "Wall-facing handstand hold 3x20-25s",
+          "Wall-facing handstand hold 3x20-30s",
           "Box pike press 3x5",
           "Scap push-up 2x10",
           "Wall shoulder taps or controlled weight shifts 2x6 per side"
         ]
       },
-      "bodyweight": "Use about 70-80% of the usual daily targets after the skill block tonight: 1 set push-ups, 1 set dips, 2 sets pull-ups, and 1 set squats, all kept clearly submaximal.",
-      "note": "Because the week is starting late, a clean moderate session is better than forcing a fake hero day.",
+      "bodyweight": "Run the displayed daily targets at the end of the morning session: 1 set push-ups, 1 set dips, 2 sets pull-ups, and 1 set squats. Stop with about 1-2 reps in reserve.",
+      "note": "Monday is full on, but it is still a restart week. Strong and clean beats heroic and sloppy.",
       "evening": {
-        "label": "Evening / gym",
-        "duration": "45-50 min",
+        "label": "Evening / mobility + flexibility reset",
+        "duration": "20-25 min",
         "bullets": [
-          "10-12 min full-body warm-up with hips, T-spine, and wrists",
-          "Med-ball chest throw 3x3",
-          "Goblet squat or front squat 3x6",
-          "Incline DB press 3x6",
-          "Chest-supported row 3x8",
-          "Romanian deadlift 2x8",
-          "Farmer carry 3x20m"
+          "90/90 hip flow 2x8 per side",
+          "Couch stretch 2x45-60s per side",
+          "Doorway pec stretch 2x45s per side",
+          "Deep squat hold 2x30-45s",
+          "Easy breathing reset 2 min"
         ]
       },
       "swaps": [
-        "Goblet/front squat -> hack squat or leg press",
+        "Front squat -> hack squat or leg press",
         "Incline DB press -> machine chest press or weighted push-up",
         "Chest-supported row -> cable row or 1-arm DB row"
       ]
     },
     {
-      "slug": "thursday",
-      "date": "2026-04-02",
-      "day": "Thursday",
-      "title": "Lower strength + pistol skill / evening gym",
-      "summary": "Now take the first true lower day. Train hard enough to matter, but do not try to repay the whole week through the squat rack.",
+      "slug": "tuesday",
+      "date": "2026-04-07",
+      "day": "Tuesday",
+      "title": "Lower strength + pistol pattern",
+      "summary": "Take the first real lower-body day with enough volume to matter, then sharpen single-leg control while you are still switched on.",
       "builds": [
         "Muscle density",
         "Leg control",
-        "Ankle mobility"
+        "Ankle range"
       ],
       "morning": {
-        "label": "Morning / lower mobility",
-        "duration": "12-15 min",
+        "label": "Morning / lower strength",
+        "duration": "60-70 min",
         "bullets": [
-          "90/90 switches 2x8 per side",
-          "Couch stretch 2x45-60s per side",
-          "Ankle rocks 2x12 per side",
-          "Deep squat hold 2x30-45s",
-          "Elephant walks 2x10"
+          "Broad jump 3x3",
+          "Back squat or front squat 4x5",
+          "Romanian deadlift 3x6-8",
+          "Walking lunge 2x8 per leg",
+          "Hanging leg raise 3x10-12"
         ]
       },
       "skill": {
-        "label": "Evening skill block / pistol pattern",
+        "label": "Morning skill block / pistol pattern",
         "duration": "20-25 min",
-        "copy": "Give the single-leg work real time before the lift. This should feel like honest lower-body skill practice, not a rushed add-on.",
+        "copy": "Treat the single-leg work like skill practice, not like extra punishment after the squat.",
         "bullets": [
           "Assisted pistol to box 3x4 per side",
           "Split-squat bottom hold 2x20s per side",
@@ -253,17 +183,17 @@
           "Ankle mobility re-test between sets"
         ]
       },
-      "bodyweight": "Run the normal daily target block after the evening skill work.",
-      "note": "Leave 1-2 reps in reserve on the squat and hinge today.",
+      "bodyweight": "Run the displayed daily targets at the end of the morning session and keep the reps crisp, especially on dips and pull-ups.",
+      "note": "Leave 1-2 reps in reserve on the squat and hinge.",
       "evening": {
-        "label": "Evening / gym",
-        "duration": "50-60 min",
+        "label": "Evening / lower mobility + flexibility",
+        "duration": "20-30 min",
         "bullets": [
-          "Broad jump 3x3",
-          "Back squat or front squat 3x5",
-          "Romanian deadlift 3x6-8",
-          "Walking lunge 2x8 per leg",
-          "Hanging leg raise 3x10-12"
+          "Ankle rocks 2x12 per side",
+          "Hamstring stretch or elephant walks 2 rounds",
+          "Adductor rockback 2x10 per side",
+          "Couch stretch 2x60s per side",
+          "Calf stretch 2x45s per side"
         ]
       },
       "swaps": [
@@ -273,31 +203,31 @@
       ]
     },
     {
-      "slug": "friday",
-      "date": "2026-04-03",
-      "day": "Friday",
-      "title": "Upper strength + explosive pull / evening gym",
-      "summary": "Upper density and fast pulling intent. This is where you re-establish crisp pull-up mechanics without letting the reps get ugly.",
+      "slug": "wednesday",
+      "date": "2026-04-08",
+      "day": "Wednesday",
+      "title": "Upper strength + explosive pull",
+      "summary": "Build upper-body density and keep the pulling crisp enough that speed and control improve together instead of fighting each other.",
       "builds": [
         "Upper density",
         "Pulling skill",
         "Shoulder control"
       ],
       "morning": {
-        "label": "Morning / upper mobility reset",
-        "duration": "12-15 min",
+        "label": "Morning / upper strength",
+        "duration": "55-65 min",
         "bullets": [
-          "T-spine rotations 2x8 per side",
-          "Doorway pec stretch 2x45s per side",
-          "Wall lat stretch 2x45s per side",
-          "Wrist extension stretch 2x30s per side",
-          "Box breathing 2 min"
+          "Med-ball chest throw 3x3",
+          "Incline press 4x6",
+          "Chest-supported row 4x8",
+          "Landmine press 3x8 per side",
+          "Face pull 3x15"
         ]
       },
       "skill": {
-        "label": "Evening skill block / explosive pull",
+        "label": "Morning skill block / explosive pull",
         "duration": "18-22 min",
-        "copy": "This block should be long enough to rehearse crisp pulling speed and active shoulder position before the upper work, not just wake the joints up.",
+        "copy": "Build speed and active shoulder position first so the heavier upper work does not flatten the pull quality.",
         "bullets": [
           "Scap pull-up 3x6",
           "Chest-to-bar intent pull-up 3x3",
@@ -305,17 +235,17 @@
           "Hollow body hold 2x20-25s"
         ]
       },
-      "bodyweight": "Run the normal daily target block after the evening skill work.",
+      "bodyweight": "Run the displayed daily targets at the end of the morning session. If elbows feel sketchy, scale dips or pull-ups instead of forcing the rep count.",
       "note": "Cut one accessory before you let pull-up quality break down.",
       "evening": {
-        "label": "Evening / gym",
-        "duration": "45-55 min",
+        "label": "Evening / upper mobility + flexibility",
+        "duration": "20-25 min",
         "bullets": [
-          "Med-ball chest throw 3x3",
-          "Incline press 3x6",
-          "Chest-supported row 3x8",
-          "Landmine press 2x8 per side",
-          "Face pull 2x15"
+          "T-spine rotations 2x8 per side",
+          "Wall lat stretch 2x45s per side",
+          "Doorway pec stretch 2x45s per side",
+          "Wrist extension stretch 2x30s per side",
+          "Breathing reset 2 min"
         ]
       },
       "swaps": [
@@ -325,59 +255,167 @@
       ]
     },
     {
-      "slug": "saturday",
-      "date": "2026-04-04",
-      "day": "Saturday",
-      "title": "Full-body bridge + skill reset / evening gym",
-      "summary": "This is the only real training day left, so use it as a controlled bridge instead of trying to repay the whole week. Touch the main patterns once, keep the skill work technical, and leave Sunday as actual recovery.",
-      "status": "Bridge day",
+      "slug": "thursday",
+      "date": "2026-04-09",
+      "day": "Thursday",
+      "title": "Athletic lower + agility",
+      "summary": "Use Thursday to move faster. Keep the power work sharp, then build athletic lower-body strength without turning the day into a grind.",
       "builds": [
-        "Full-body strength",
-        "Skill reset",
-        "Weekend recovery"
+        "Agility",
+        "Lower power",
+        "Athletic control"
       ],
       "morning": {
-        "label": "Morning / missed mobility",
-        "duration": "Missed",
-        "copy": "Saturday morning mobility was also missed, so tonight needs a longer warm-up and cleaner volume instead of extra ambition."
-      },
-      "skill": {
-        "label": "Evening skill block / short re-entry touch",
-        "duration": "8-10 min",
-        "copy": "Touch the main skill ladders once without chasing fatigue. This is just enough to reconnect the positions before the bridge lift.",
+        "label": "Morning / athletic lower",
+        "duration": "55-65 min",
         "bullets": [
-          "Wall-facing handstand hold 2x15-20s",
-          "Scap pull-up or chest-to-bar intent pull-up 2x3",
-          "Assisted pistol to box 2x2-3 per side"
+          "Line hops or ladder work 5 min",
+          "Trap-bar deadlift 3x4-5",
+          "Bulgarian split squat 3x8 per leg",
+          "Lateral bounds 3x5 per side",
+          "Sled push or bike sprint 6 rounds"
         ]
       },
-      "bodyweight": "Use about 50-60% of the displayed daily targets after the skill block: 1 controlled set each of push-ups, dips, and squats plus 2 crisp pull-up sets. Stop well before grindy reps.",
-      "note": "Because Saturday morning was also missed, tonight should feel like a re-entry session, not a redemption workout.",
-      "evening": {
-        "label": "Evening / gym",
-        "duration": "40-50 min",
+      "skill": {
+        "label": "Morning skill block / lower-body control",
+        "duration": "15-20 min",
+        "copy": "Keep the skill side clean and springy. This is about landings, balance, and lower-body control, not fatigue.",
         "bullets": [
-          "12 min full warm-up with hips, T-spine, wrists, and ramping sets",
-          "Goblet squat or front squat 3x5",
-          "Incline DB press or machine chest press 3x6",
-          "Chest-supported row or cable row 3x8",
-          "Romanian deadlift 2x6-8",
-          "Farmer carry 2x20m",
-          "Hanging knee raise 2x8-10"
+          "Snap-down to stick landing 3x3",
+          "Assisted pistol to box 2x3 per side",
+          "Skater hop stick 2x4 per side",
+          "Copenhagen plank 2x20-30s per side"
+        ]
+      },
+      "bodyweight": "Run the displayed daily targets at the end of the morning session, but keep the pace controlled after the jumps and sprints.",
+      "note": "Fast reps should look fast. If they turn into grinders, trim the load before you trim the intent.",
+      "evening": {
+        "label": "Evening / hip + adductor flexibility",
+        "duration": "20-30 min",
+        "bullets": [
+          "90/90 switches 2x8 per side",
+          "Cossack squat hold 2x20-30s per side",
+          "Adductor stretch 2x45s per side",
+          "Hip flexor stretch 2x45-60s per side",
+          "Light calf stretch 2x45s per side"
         ]
       },
       "swaps": [
-        "Goblet/front squat -> hack squat or leg press",
-        "Incline DB press -> weighted push-up or machine chest press",
-        "Chest-supported row -> cable row or 1-arm DB row"
+        "Trap-bar deadlift -> kettlebell swing or heavy RDL",
+        "Bulgarian split squat -> reverse lunge or step-up",
+        "Sled push -> rower sprint or assault bike"
+      ]
+    },
+    {
+      "slug": "friday",
+      "date": "2026-04-10",
+      "day": "Friday",
+      "title": "Push density + balance work",
+      "summary": "Friday pushes the upper body again, but with slightly higher density and a stronger handstand-balance bias than Monday.",
+      "builds": [
+        "Push density",
+        "Balance",
+        "Shoulder stamina"
+      ],
+      "morning": {
+        "label": "Morning / push density",
+        "duration": "55-65 min",
+        "bullets": [
+          "DB or barbell push press 4x4",
+          "Flat or incline DB press 3x8",
+          "Cable row 3x10",
+          "Seated DB press 2x8",
+          "Rear delt + triceps 2x12-15"
+        ]
+      },
+      "skill": {
+        "label": "Morning skill block / balance and pike strength",
+        "duration": "20-25 min",
+        "copy": "Give the balance work real focus before pressing. Precision matters more than heroic hold times.",
+        "bullets": [
+          "Wall-facing handstand hold 3x25-30s",
+          "Box pike press 3x5",
+          "Shoulder tap or weight-shift drill 2x6 per side",
+          "Hollow-to-tuck compression 2x8"
+        ]
+      },
+      "bodyweight": "Run the displayed daily targets at the end of the morning session and keep all sets smooth enough that Saturday still feels trainable.",
+      "note": "Friday should feel productive, not like the last chance to prove something.",
+      "evening": {
+        "label": "Evening / shoulder, chest, and lat flexibility",
+        "duration": "20-25 min",
+        "bullets": [
+          "Doorway pec stretch 2x45s per side",
+          "Wall lat stretch 2x45s per side",
+          "Child's pose side reach 2x30s per side",
+          "Wrist flexor and extensor stretch 2x30s per side",
+          "Easy thoracic opener 2 rounds"
+        ]
+      },
+      "swaps": [
+        "Push press -> DB push press or machine shoulder press",
+        "Flat or incline DB press -> weighted push-up or machine chest press",
+        "Cable row -> chest-supported row or 1-arm lat pulldown"
+      ]
+    },
+    {
+      "slug": "saturday",
+      "date": "2026-04-11",
+      "day": "Saturday",
+      "title": "Pull + posterior chain + compression",
+      "summary": "Close the working week with strong pulling and posterior-chain work, then finish with compression and core positions that support the longer skill ladder.",
+      "builds": [
+        "Pull strength",
+        "Posterior chain",
+        "Core compression"
+      ],
+      "morning": {
+        "label": "Morning / pull + posterior chain",
+        "duration": "55-65 min",
+        "bullets": [
+          "Romanian deadlift or trap-bar deadlift 3x5",
+          "Chest-supported row 3x8",
+          "Neutral-grip pulldown or assisted pull-up 3x10",
+          "Hip thrust 3x8",
+          "Farmer carry 3x20m"
+        ]
+      },
+      "skill": {
+        "label": "Morning skill block / compression",
+        "duration": "18-22 min",
+        "copy": "Keep the core work positional and clean so it supports L-sit and press progress later.",
+        "bullets": [
+          "Hollow body hold 3x20-30s",
+          "Seated compression lift 3x8-10",
+          "Hanging knee raise 3x8-10",
+          "Pike fold reach 2x8"
+        ]
+      },
+      "bodyweight": "Run the displayed daily targets at the end of the morning session. If you feel cooked by Saturday, keep the reps but slow the pace and stay submaximal.",
+      "note": "Saturday should close the week cleanly so Sunday can actually feel restorative.",
+      "evening": {
+        "label": "Evening / full-body mobility flow",
+        "duration": "25-30 min",
+        "bullets": [
+          "90/90 flow 2 rounds",
+          "Deep squat hold 2x30-45s",
+          "Hamstring stretch 2x45s per side",
+          "Thoracic rotation 2x8 per side",
+          "Long easy breathing reset 3 min"
+        ]
+      },
+      "swaps": [
+        "RDL or trap-bar deadlift -> DB RDL or back extension",
+        "Neutral-grip pulldown -> ring row or band-assisted pull-up",
+        "Hip thrust -> glute bridge or cable pull-through"
       ]
     },
     {
       "slug": "sunday",
-      "date": "2026-04-05",
+      "date": "2026-04-12",
       "day": "Sunday",
       "title": "Full rest day",
-      "summary": "No training. No catch-up session. Let the system reset so next week starts clean.",
+      "summary": "No gym, no skill block, no catch-up. Let the system absorb the week so next Monday starts from actual recovery instead of accumulated guilt.",
       "status": "Rest locked",
       "builds": [
         "Recovery",
@@ -386,19 +424,19 @@
       "morning": {
         "label": "Morning / off",
         "duration": "Off",
-        "copy": "No gym. Walk if you want, but the day is for recovery."
+        "copy": "No training. Walk if you want, but the day is for recovery."
       },
       "skill": {
         "label": "Skill block / off",
         "duration": "Off",
-        "copy": "Rest is part of the skill plan. You get better at hard things by practicing them fresh next week."
+        "copy": "Rest is part of the skill plan. It is how you come back sharp enough to practice the hard things properly."
       },
       "bodyweight": "Rest from the daily bodyweight work today.",
       "note": "A short easy walk is fine. Turning Sunday into a stealth training day is not.",
       "evening": {
-        "label": "Evening / off",
-        "duration": "Off",
-        "copy": "No formal mobility required. If you feel stiff, do 5-10 easy minutes only."
+        "label": "Evening / optional light stretch",
+        "duration": "Optional 5-10 min",
+        "copy": "Only do a few easy stretches if you feel stiff. This is not a second recovery workout."
       },
       "swaps": [
         "Optional easy walk",

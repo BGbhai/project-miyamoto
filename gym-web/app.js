@@ -179,24 +179,24 @@ const renderOperatingSystem = () => `
         <p class="section-kicker">How to use the board</p>
         <h2 class="section-title">Keep the board simple.</h2>
         <p class="section-copy">
-          This app should tell you what to do without interpretation. The main calisthenics skill work belongs inside the evening gym session, and morning work should appear only when it actually helps.
+          This app should tell you what to do without interpretation. The main calisthenics skill work belongs inside the morning gym session, and the evening block is there to restore range, tissue quality, and recovery.
         </p>
       </div>
       <div class="workflow-grid">
         <article class="workflow-step">
           <span class="workflow-index">1</span>
-          <h3>Morning is optional</h3>
-          <p>Use a morning block only when mobility, flexibility, or recovery work adds value. It should not exist just because the template expects it.</p>
+          <h3>Morning is the build</h3>
+          <p>Gym work, calisthenics skill practice, and the daily bodyweight finisher should all happen in the morning block so the hard work is done early.</p>
         </article>
         <article class="workflow-step">
           <span class="workflow-index">2</span>
-          <h3>Long evening skill block</h3>
+          <h3>Skill before lifting</h3>
           <p>Standard days should carry a real 15-25 minute skill block before the main lift. Bridge days can stay shorter if recovery demands it.</p>
         </article>
         <article class="workflow-step">
           <span class="workflow-index">3</span>
-          <h3>Finish and log it</h3>
-          <p>End with the daily calisthenics block, then mark the session in the shared log. Blank completion still counts as skipped.</p>
+          <h3>Evening resets you</h3>
+          <p>Use the evening for mobility and flexibility, then log both sessions in the shared sheet. Blank completion still counts as skipped.</p>
         </article>
       </div>
     </div>
@@ -214,9 +214,9 @@ const renderTodayBoard = (day) => `
       </div>
       ${renderBuildChips(day.builds)}
       <div class="today-grid">
-        ${renderPrepBlock(day)}
-        ${renderEveningMainBlock(day, true)}
+        ${renderMorningMainBlock(day, true)}
         ${renderFinisherBlock(day)}
+        ${renderEveningResetBlock(day)}
         ${renderSwapBlock(day)}
       </div>
     </div>
@@ -307,32 +307,17 @@ const renderBuildChips = (builds = []) =>
     `
     : "";
 
-const renderPrepBlock = (day) => `
-  <article class="session-block session-block--prep">
+const renderMorningMainBlock = (day, isToday = false) => `
+  <article class="session-block session-block--main">
     <div class="session-step">1</div>
     <div class="session-body">
       <div class="session-head">
-        <p class="session-kicker">Morning prep</p>
-        <h3>${escapeHtml(day.morning.label)}</h3>
-        ${renderDuration(day.morning.duration)}
-      </div>
-      ${renderTextBlock(day.morning.copy)}
-      ${renderBullets(day.morning.bullets)}
-    </div>
-  </article>
-`;
-
-const renderEveningMainBlock = (day, isToday = false) => `
-  <article class="session-block session-block--main">
-    <div class="session-step">2</div>
-    <div class="session-body">
-      <div class="session-head">
-        <p class="session-kicker">Evening main block</p>
-        <h3>${isToday ? "Tonight's build" : "Skill + gym session"}</h3>
+        <p class="session-kicker">Morning main block</p>
+        <h3>${isToday ? "This morning's build" : "Morning skill + gym"}</h3>
         <span class="session-time">
           ${
-            day.skill.duration && day.evening.duration
-              ? `${escapeHtml(day.skill.duration)} skill + ${escapeHtml(day.evening.duration)} lift`
+            day.skill.duration && day.morning.duration
+              ? `${escapeHtml(day.skill.duration)} skill + ${escapeHtml(day.morning.duration)} lift`
               : "Skill first, lift second"
           }
         </span>
@@ -350,11 +335,11 @@ const renderEveningMainBlock = (day, isToday = false) => `
         <section class="sub-session sub-session--lift">
           <div class="sub-session-head">
             <p class="sub-session-kicker">Gym block</p>
-            <h4>${escapeHtml(day.evening.label)}</h4>
-            ${renderDuration(day.evening.duration)}
+            <h4>${escapeHtml(day.morning.label)}</h4>
+            ${renderDuration(day.morning.duration)}
           </div>
-          ${renderTextBlock(day.evening.copy)}
-          ${renderBullets(day.evening.bullets)}
+          ${renderTextBlock(day.morning.copy)}
+          ${renderBullets(day.morning.bullets)}
         </section>
       </div>
     </div>
@@ -363,7 +348,7 @@ const renderEveningMainBlock = (day, isToday = false) => `
 
 const renderFinisherBlock = (day) => `
   <article class="session-block session-block--finisher">
-    <div class="session-step">3</div>
+    <div class="session-step">2</div>
     <div class="session-body">
       <div class="session-head">
         <p class="session-kicker">Daily finisher</p>
@@ -371,6 +356,21 @@ const renderFinisherBlock = (day) => `
       </div>
       <p class="session-copy">${escapeHtml(day.bodyweight)}</p>
       ${day.note ? `<p class="day-note">${escapeHtml(day.note)}</p>` : ""}
+    </div>
+  </article>
+`;
+
+const renderEveningResetBlock = (day) => `
+  <article class="session-block session-block--prep">
+    <div class="session-step">3</div>
+    <div class="session-body">
+      <div class="session-head">
+        <p class="session-kicker">Evening reset</p>
+        <h3>${escapeHtml(day.evening.label)}</h3>
+        ${renderDuration(day.evening.duration)}
+      </div>
+      ${renderTextBlock(day.evening.copy)}
+      ${renderBullets(day.evening.bullets)}
     </div>
   </article>
 `;
@@ -423,9 +423,9 @@ const renderDaySection = (day) => `
           ${renderBuildChips(day.builds)}
         </div>
         <div class="day-session-stack">
-          ${renderPrepBlock(day)}
-          ${renderEveningMainBlock(day)}
+          ${renderMorningMainBlock(day)}
           ${renderFinisherBlock(day)}
+          ${renderEveningResetBlock(day)}
           ${renderSwapBlock(day)}
         </div>
       </div>
